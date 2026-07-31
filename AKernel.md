@@ -17,4 +17,5 @@ AKernel 是一个面向 Agent 的云操作系统，我现在要跟这个系统�
 * [E2B: AI Sandboxes](https://e2b.dev/)
 * [阿里开源的安全沙箱解决方案 OpenSandbox](https://mp.weixin.qq.com/s/5gQbCKjxFv-FBGp_2qLtIA)
 * [腾讯开源Cube Sandbox：60毫秒冷启动的AI沙盒运行时](https://mp.weixin.qq.com/s/B3jaoCcYsSXt0epopijZPA)
-
+* [Kubernetes won the container decade. Google’s Agent Substrate wants the next one.](https://thenewstack.io/kubernetes-ai-agent-runtime/)
+* [Kubernetes 统治了容器时代，谷歌 Agent Substrate 意在拿下下一个十年](https://mp.weixin.qq.com/s/5YtXEhywk_JIJ04dknY0uQ)
