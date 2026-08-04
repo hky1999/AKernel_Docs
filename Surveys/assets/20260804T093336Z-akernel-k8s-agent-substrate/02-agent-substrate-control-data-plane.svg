@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 900" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Substrate control plane and data plane</title>
+  <desc id="desc">Kubernetes manages low-frequency WorkerPool capacity and long-running pods. Agent Substrate manages high-frequency Actor records, assignments, resume and suspend through Redis, ateapi, atelet and ateom. HTTP traffic goes through atenet and atunnel.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #526079; }
+      .zone-title { font-size: 18px; font-weight: 700; }
+      .box-title { font-size: 15px; font-weight: 700; }
+      .box-note { font-size: 12.5px; fill: #526079; }
+      .label { font-size: 12px; font-weight: 600; fill: #526079; }
+      .zone { rx: 18; stroke-width: 1.6; }
+      .k8s-zone { fill: #f5f9ff; stroke: #93b4ed; }
+      .actor-zone { fill: #faf7ff; stroke: #b69ae8; }
+      .data-zone { fill: #f7fbf8; stroke: #8bc6a0; }
+      .k8s-box { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.6; rx: 11; }
+      .custom-box { fill: #f3e8ff; stroke: #7c3aed; stroke-width: 1.6; rx: 11; }
+      .data-box { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.6; rx: 11; }
+      .store-box { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.5; rx: 11; }
+      .k8s-line { fill: none; stroke: #2563eb; stroke-width: 2; marker-end: url(#arrow-blue); }
+      .custom-line { fill: none; stroke: #7c3aed; stroke-width: 2.4; marker-end: url(#arrow-purple); }
+      .data-line { fill: none; stroke: #16a34a; stroke-width: 4; marker-end: url(#arrow-green); }
+      .snapshot-line { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow-gray); }
+      .bypass { fill: none; stroke: #ea580c; stroke-width: 3; stroke-dasharray: 9 6; marker-end: url(#arrow-orange); }
+      .exception { stroke-dasharray: 5 5; }
+      .note { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.3; rx: 9; }
+    </style>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/></marker>
+    <marker id="arrow-purple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7c3aed"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+    <marker id="arrow-gray" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/></marker>
+  </defs>
+
+  <rect width="1320" height="900" fill="#ffffff"/>
+  <text class="title" x="40" y="45">Agent Substrate：Kubernetes 管 Worker 容量，专用控制面管 Actor</text>
+  <text class="subtitle" x="40" y="72">蓝色＝Kubernetes　紫色＝Substrate 自研控制面　绿色＝HTTP 数据流　橙色虚线＝Actor 热路径绕过 per-Actor Pod</text>
+
+  <rect class="k8s-zone zone" x="30" y="100" width="1260" height="230"/>
+  <text class="zone-title" x="55" y="132">Kubernetes Infrastructure Plane · 低频容量与长期 Pod</text>
+
+  <rect class="k8s-box" x="55" y="165" width="210" height="92"/>
+  <text class="box-title" x="160" y="194" text-anchor="middle">Admin CRDs</text>
+  <text class="box-note" x="160" y="218" text-anchor="middle">WorkerPool / ActorTemplate</text>
+  <text class="box-note" x="160" y="239" text-anchor="middle">SandboxConfig</text>
+
+  <rect class="k8s-box" x="325" y="165" width="180" height="92"/>
+  <text class="box-title" x="415" y="194" text-anchor="middle">kube-apiserver</text>
+  <text class="box-note" x="415" y="218" text-anchor="middle">CRD / Pod / Secret</text>
+  <text class="box-note" x="415" y="239" text-anchor="middle">List / Watch / GET</text>
+
+  <rect class="custom-box" x="565" y="165" width="190" height="92"/>
+  <text class="box-title" x="660" y="194" text-anchor="middle">atecontroller</text>
+  <text class="box-note" x="660" y="218" text-anchor="middle">reconcile WorkerPool</text>
+  <text class="box-note" x="660" y="239" text-anchor="middle">golden snapshot workflow</text>
+
+  <rect class="k8s-box" x="815" y="165" width="190" height="92"/>
+  <text class="box-title" x="910" y="194" text-anchor="middle">Deployment / HPA</text>
+  <text class="box-note" x="910" y="218" text-anchor="middle">kube-scheduler / kubelet</text>
+  <text class="box-note" x="910" y="239" text-anchor="middle">scale Worker replicas</text>
+
+  <rect class="k8s-box" x="1065" y="150" width="195" height="122"/>
+  <text class="box-title" x="1162" y="180" text-anchor="middle">Long-lived Pods</text>
+  <text class="box-note" x="1162" y="204" text-anchor="middle">Worker Pod + ateom</text>
+  <text class="box-note" x="1162" y="225" text-anchor="middle">atelet DaemonSet</text>
+  <text class="box-note" x="1162" y="246" text-anchor="middle">ateapi / atenet / ValKey</text>
+
+  <path class="k8s-line" d="M265 211 H325"/>
+  <path class="k8s-line" d="M505 211 H565"/>
+  <path class="k8s-line" d="M755 211 H815"/>
+  <path class="k8s-line" d="M1005 211 H1065"/>
+
+  <rect class="actor-zone zone" x="30" y="365" width="1260" height="250"/>
+  <text class="zone-title" x="55" y="397">Agent Control Plane · 高频 Actor create / resume / suspend</text>
+
+  <rect class="custom-box" x="55" y="445" width="170" height="82"/>
+  <text class="box-title" x="140" y="475" text-anchor="middle">Actor Trigger</text>
+  <text class="box-note" x="140" y="499" text-anchor="middle">CreateActor / Resume</text>
+
+  <rect class="custom-box" x="280" y="425" width="215" height="122"/>
+  <text class="box-title" x="388" y="456" text-anchor="middle">ate-api-server</text>
+  <text class="box-note" x="388" y="480" text-anchor="middle">lock + versioned workflow</text>
+  <text class="box-note" x="388" y="501" text-anchor="middle">Actor ↔ Worker assignment</text>
+  <text class="box-note" x="388" y="522" text-anchor="middle">direct lifecycle RPC</text>
+
+  <rect class="store-box" x="540" y="425" width="190" height="122"/>
+  <text class="box-title" x="635" y="456" text-anchor="middle">Redis / ValKey</text>
+  <text class="box-note" x="635" y="480" text-anchor="middle">Actor / Worker records</text>
+  <text class="box-note" x="635" y="501" text-anchor="middle">CAS + distributed lock</text>
+  <text class="box-note" x="635" y="522" text-anchor="middle">Worker event pub/sub</text>
+
+  <rect class="custom-box" x="775" y="425" width="190" height="122"/>
+  <text class="box-title" x="870" y="456" text-anchor="middle">Worker Cache</text>
+  <text class="box-note" x="870" y="480" text-anchor="middle">in-memory scheduler</text>
+  <text class="box-note" x="870" y="501" text-anchor="middle">select free warm slot</text>
+  <text class="box-note" x="870" y="522" text-anchor="middle">no kube-scheduler</text>
+
+  <rect class="custom-box" x="1010" y="425" width="115" height="122"/>
+  <text class="box-title" x="1067" y="462" text-anchor="middle">atelet</text>
+  <text class="box-note" x="1067" y="486" text-anchor="middle">node gRPC</text>
+  <text class="box-note" x="1067" y="507" text-anchor="middle">snapshot mover</text>
+
+  <rect class="custom-box" x="1160" y="425" width="100" height="122"/>
+  <text class="box-title" x="1210" y="462" text-anchor="middle">ateom</text>
+  <text class="box-note" x="1210" y="486" text-anchor="middle">runsc / CH</text>
+  <text class="box-note" x="1210" y="507" text-anchor="middle">restore</text>
+
+  <path class="custom-line" d="M225 486 H280"/>
+  <path class="custom-line" d="M495 467 H540"/>
+  <path class="custom-line" d="M730 505 H775"/>
+  <path class="custom-line" d="M965 486 H1010"/>
+  <path class="custom-line" d="M1125 486 H1160"/>
+  <path class="bypass" d="M140 552 H1188"/>
+  <text class="label" x="664" y="575" text-anchor="middle" fill="#c2410c">Actor 热路径：Redis claim + direct atelet/ateom RPC；不创建 Pod、不调用 kube-scheduler</text>
+
+  <path class="k8s-line exception" d="M415 257 V350 Q415 365 440 365 V425"/>
+  <text class="label" x="448" y="348">informer cache；Secret miss 可同步 GET</text>
+
+  <rect class="data-zone zone" x="30" y="650" width="1260" height="205"/>
+  <text class="zone-title" x="55" y="682">Actor Request &amp; Snapshot Data Plane</text>
+
+  <rect class="data-box" x="55" y="730" width="150" height="65"/>
+  <text class="box-title" x="130" y="768" text-anchor="middle">HTTP Client</text>
+
+  <rect class="data-box" x="270" y="715" width="210" height="95"/>
+  <text class="box-title" x="375" y="744" text-anchor="middle">atenet-router / Envoy</text>
+  <text class="box-note" x="375" y="768" text-anchor="middle">ext_proc triggers Resume</text>
+  <text class="box-note" x="375" y="789" text-anchor="middle">resolve current Worker IP</text>
+
+  <rect class="data-box" x="550" y="715" width="180" height="95"/>
+  <text class="box-title" x="640" y="744" text-anchor="middle">atunnel</text>
+  <text class="box-note" x="640" y="768" text-anchor="middle">mTLS Worker :443</text>
+  <text class="box-note" x="640" y="789" text-anchor="middle">reverse proxy</text>
+
+  <rect class="data-box" x="800" y="715" width="190" height="95"/>
+  <text class="box-title" x="895" y="744" text-anchor="middle">Actor Sandbox</text>
+  <text class="box-note" x="895" y="768" text-anchor="middle">gVisor / microVM</text>
+  <text class="box-note" x="895" y="789" text-anchor="middle">application port 80</text>
+
+  <rect class="store-box" x="1060" y="715" width="190" height="95"/>
+  <text class="box-title" x="1155" y="744" text-anchor="middle">Snapshot Store</text>
+  <text class="box-note" x="1155" y="768" text-anchor="middle">GCS / S3 / node-local</text>
+  <text class="box-note" x="1155" y="789" text-anchor="middle">FULL or DATA scope</text>
+
+  <path class="data-line" d="M205 763 H270"/>
+  <path class="data-line" d="M480 763 H550"/>
+  <path class="data-line" d="M730 763 H800"/>
+  <path class="custom-line" d="M375 715 V625 Q375 610 388 610 V547"/>
+  <path class="snapshot-line" d="M990 763 H1060"/>
+
+  <rect class="note" x="825" y="285" width="420" height="34"/>
+  <text class="label" x="1035" y="307" text-anchor="middle" fill="#c2410c">Pool 扩容仍走 HPA → Deployment → Pod；池耗尽时 K8s 税重新出现</text>
+</svg>

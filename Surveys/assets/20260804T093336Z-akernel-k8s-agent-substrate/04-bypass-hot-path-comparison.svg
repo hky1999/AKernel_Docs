@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 850" role="img" aria-labelledby="title desc">
+  <title id="title">Kubernetes, Agent Substrate and AKernel hot path comparison</title>
+  <desc id="desc">Three aligned columns compare the Kubernetes objects, high-frequency control path, node execution path, data path and idle behavior of Kubernetes, Agent Substrate and AKernel.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #526079; }
+      .col-title { font-size: 21px; font-weight: 750; }
+      .box-title { font-size: 15px; font-weight: 700; }
+      .box-note { font-size: 12.5px; fill: #526079; }
+      .metric { font-size: 14px; font-weight: 700; }
+      .panel { fill: #fbfdff; stroke: #cbd5e1; stroke-width: 1.5; rx: 18; }
+      .k8s-box { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.6; rx: 11; }
+      .custom-box { fill: #f3e8ff; stroke: #7c3aed; stroke-width: 1.6; rx: 11; }
+      .black-box { fill: #f1f5f9; stroke: #475569; stroke-width: 1.6; stroke-dasharray: 7 5; rx: 11; }
+      .node-box { fill: #fff7ed; stroke: #ea580c; stroke-width: 1.5; rx: 11; }
+      .data-box { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.5; rx: 11; }
+      .idle-box { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.4; rx: 11; }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#blue); }
+      .line-orange { fill: none; stroke: #ea580c; stroke-width: 3; stroke-dasharray: 8 5; marker-end: url(#orange); }
+      .line-green { fill: none; stroke: #16a34a; stroke-width: 3.5; marker-end: url(#green); }
+      .footer { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.4; rx: 12; }
+    </style>
+    <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/></marker>
+    <marker id="orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/></marker>
+    <marker id="green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+  </defs>
+
+  <rect width="1400" height="850" fill="#ffffff"/>
+  <text class="title" x="35" y="45">三套架构的核心区别：高频逻辑单元是否映射为 Kubernetes Pod</text>
+  <text class="subtitle" x="35" y="72">P＝Pods　A＝logical Actors　W＝warm Worker slots　S＝AKernel Sandboxes　N＝AKernel nodes</text>
+
+  <rect class="panel" x="25" y="100" width="430" height="650"/>
+  <rect class="panel" x="485" y="100" width="430" height="650"/>
+  <rect class="panel" x="945" y="100" width="430" height="650"/>
+
+  <text class="col-title" x="240" y="137" text-anchor="middle">Traditional Kubernetes</text>
+  <text class="col-title" x="700" y="137" text-anchor="middle">Agent Substrate</text>
+  <text class="col-title" x="1160" y="137" text-anchor="middle">AKernel</text>
+
+  <rect class="k8s-box" x="65" y="165" width="350" height="88"/>
+  <text class="box-title" x="240" y="194" text-anchor="middle">K8s Unit: Pod / Job / Deployment</text>
+  <text class="box-note" x="240" y="218" text-anchor="middle">每个逻辑 workload 是 API object</text>
+  <text class="box-note" x="240" y="239" text-anchor="middle">K8s state grows O(P)</text>
+
+  <rect class="k8s-box" x="525" y="165" width="350" height="88"/>
+  <text class="box-title" x="700" y="194" text-anchor="middle">K8s Unit: WorkerPool / Worker Pod</text>
+  <text class="box-note" x="700" y="218" text-anchor="middle">K8s只维护active capacity</text>
+  <text class="box-note" x="700" y="239" text-anchor="middle">K8s state grows O(W), W ≪ A</text>
+
+  <rect class="k8s-box" x="985" y="165" width="350" height="88"/>
+  <text class="box-title" x="1160" y="194" text-anchor="middle">K8s Unit: System Pods + Node DaemonSet</text>
+  <text class="box-note" x="1160" y="218" text-anchor="middle">master / frontend / one node Pod</text>
+  <text class="box-note" x="1160" y="239" text-anchor="middle">K8s state grows mainly O(N)</text>
+
+  <rect class="k8s-box" x="65" y="295" width="350" height="98"/>
+  <text class="box-title" x="240" y="324" text-anchor="middle">Per-Pod Control</text>
+  <text class="box-note" x="240" y="348" text-anchor="middle">API Server → etcd → controllers</text>
+  <text class="box-note" x="240" y="369" text-anchor="middle">scheduler → kubelet</text>
+
+  <rect class="custom-box" x="525" y="295" width="350" height="98"/>
+  <text class="box-title" x="700" y="324" text-anchor="middle">Per-Actor Control</text>
+  <text class="box-note" x="700" y="348" text-anchor="middle">ateapi + Redis lock/CAS</text>
+  <text class="box-note" x="700" y="369" text-anchor="middle">in-memory Worker scheduler</text>
+
+  <rect class="black-box" x="985" y="295" width="350" height="98"/>
+  <text class="box-title" x="1160" y="324" text-anchor="middle">Per-Sandbox Control</text>
+  <text class="box-note" x="1160" y="348" text-anchor="middle">openYuanRong scheduler / instance state</text>
+  <text class="box-note" x="1160" y="369" text-anchor="middle">prebuilt implementation boundary</text>
+
+  <rect class="node-box" x="65" y="435" width="350" height="104"/>
+  <text class="box-title" x="240" y="464" text-anchor="middle">Node Materialization</text>
+  <text class="box-note" x="240" y="488" text-anchor="middle">kubelet + CRI + conditional CNI/CSI</text>
+  <text class="box-note" x="240" y="509" text-anchor="middle">image / sandbox / readiness</text>
+  <text class="box-note" x="240" y="530" text-anchor="middle">new Pod for new unit</text>
+
+  <rect class="node-box" x="525" y="435" width="350" height="104"/>
+  <text class="box-title" x="700" y="464" text-anchor="middle">Warm Worker Activation</text>
+  <text class="box-note" x="700" y="488" text-anchor="middle">ateapi → atelet → ateom</text>
+  <text class="box-note" x="700" y="509" text-anchor="middle">snapshot restore / boot inside existing Pod</text>
+  <text class="box-note" x="700" y="530" text-anchor="middle">no per-Actor kube-scheduler</text>
+
+  <rect class="node-box" x="985" y="435" width="350" height="104"/>
+  <text class="box-title" x="1160" y="464" text-anchor="middle">Direct Node Runtime</text>
+  <text class="box-note" x="1160" y="488" text-anchor="middle">YR node → sandboxd UDS</text>
+  <text class="box-note" x="1160" y="509" text-anchor="middle">pooled cgroup/veth/rootfs</text>
+  <text class="box-note" x="1160" y="530" text-anchor="middle">fresh runsc create</text>
+
+  <rect class="data-box" x="65" y="580" width="350" height="72"/>
+  <text class="box-title" x="240" y="608" text-anchor="middle">Steady Data: Service / Pod → App</text>
+  <text class="box-note" x="240" y="632" text-anchor="middle">不逐请求访问 API Server</text>
+
+  <rect class="data-box" x="525" y="580" width="350" height="72"/>
+  <text class="box-title" x="700" y="608" text-anchor="middle">Steady Data: atenet → atunnel → Actor</text>
+  <text class="box-note" x="700" y="632" text-anchor="middle">每请求仍调用 ResumeActor / Redis</text>
+
+  <rect class="data-box" x="985" y="580" width="350" height="72"/>
+  <text class="box-title" x="1160" y="608" text-anchor="middle">Steady Data: Actor RPC / PTY / Port</text>
+  <text class="box-note" x="1160" y="632" text-anchor="middle">gateway + physical sandbox route</text>
+
+  <rect class="idle-box" x="65" y="680" width="350" height="48"/>
+  <text class="metric" x="240" y="710" text-anchor="middle">Idle: Pod stays, scales, or is deleted</text>
+  <rect class="idle-box" x="525" y="680" width="350" height="48"/>
+  <text class="metric" x="700" y="710" text-anchor="middle">Idle: snapshot → release Worker</text>
+  <rect class="idle-box" x="985" y="680" width="350" height="48"/>
+  <text class="metric" x="1160" y="710" text-anchor="middle">Idle: keep or reclaim; no C/R yet</text>
+
+  <path class="line-blue" d="M240 253 V295"/>
+  <path class="line-blue" d="M240 393 V435"/>
+  <path class="line-orange" d="M700 253 V295"/>
+  <path class="line-orange" d="M700 393 V435"/>
+  <path class="line-orange" d="M1160 253 V295"/>
+  <path class="line-orange" d="M1160 393 V435"/>
+  <path class="line-green" d="M240 539 V580"/>
+  <path class="line-green" d="M700 539 V580"/>
+  <path class="line-green" d="M1160 539 V580"/>
+
+  <rect class="footer" x="25" y="780" width="1350" height="48"/>
+  <text class="metric" x="700" y="810" text-anchor="middle" fill="#c2410c">“bypass Kubernetes”＝绕过 per-logical-unit Pod create/schedule/materialize；不是绕过 K8s 托管、CNI 网络或所有后台 reconciliation</text>
+</svg>

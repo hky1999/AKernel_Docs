@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
+  <title id="title">Kubernetes control plane and data plane</title>
+  <desc id="desc">Traditional Kubernetes uses API Server, etcd, controllers and scheduler for every Pod lifecycle. Kubelet, CRI, CNI and CSI prepare the node. Steady workload traffic bypasses API Server but still uses the Kubernetes-provisioned network data plane.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #526079; }
+      .zone-title { font-size: 18px; font-weight: 700; }
+      .box-title { font-size: 16px; font-weight: 700; }
+      .box-note { font-size: 13px; fill: #526079; }
+      .label { font-size: 12px; font-weight: 600; fill: #526079; }
+      .zone { rx: 18; stroke-width: 1.6; }
+      .control-zone { fill: #f5f9ff; stroke: #93b4ed; }
+      .node-zone { fill: #f7fbf8; stroke: #8bc6a0; }
+      .control-box { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.6; rx: 12; }
+      .node-box { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.6; rx: 12; }
+      .plugin-box { fill: #fff7ed; stroke: #ea580c; stroke-width: 1.6; rx: 12; }
+      .external-box { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.4; rx: 12; }
+      .control-line { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-end: url(#arrow-blue); }
+      .control-bi { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-start: url(#arrow-blue-start); marker-end: url(#arrow-blue); }
+      .node-line { fill: none; stroke: #475569; stroke-width: 2; marker-end: url(#arrow-gray); }
+      .data-line { fill: none; stroke: #16a34a; stroke-width: 4; marker-end: url(#arrow-green); }
+      .conditional { stroke-dasharray: 7 5; }
+      .callout { fill: #fff; stroke: #cbd5e1; stroke-width: 1.2; rx: 10; }
+    </style>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/></marker>
+    <marker id="arrow-blue-start" markerWidth="9" markerHeight="9" refX="1" refY="4.5" orient="auto-start-reverse"><path d="M9,0 L0,4.5 L9,9 z" fill="#2563eb"/></marker>
+    <marker id="arrow-gray" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#475569"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+  </defs>
+
+  <rect width="1280" height="820" fill="#ffffff"/>
+  <text class="title" x="40" y="46">Kubernetes：每个 Pod 都进入通用声明式控制链</text>
+  <text class="subtitle" x="40" y="73">蓝色＝Kubernetes 控制与生命周期　绿色粗线＝业务数据流　橙色虚线＝按 workload 条件出现</text>
+
+  <rect class="control-zone zone" x="245" y="105" width="985" height="270"/>
+  <text class="zone-title" x="270" y="137">Kubernetes Control Plane</text>
+  <text class="box-note" x="488" y="137">desired state、持久化、调度与 reconciliation</text>
+
+  <rect class="external-box" x="35" y="170" width="165" height="72"/>
+  <text class="box-title" x="117" y="199" text-anchor="middle">Client / Operator</text>
+  <text class="box-note" x="117" y="222" text-anchor="middle">Pod / Job / Deployment</text>
+
+  <rect class="control-box" x="300" y="175" width="190" height="78"/>
+  <text class="box-title" x="395" y="205" text-anchor="middle">kube-apiserver</text>
+  <text class="box-note" x="395" y="228" text-anchor="middle">authn / RBAC / admission</text>
+
+  <rect class="control-box" x="575" y="175" width="170" height="78"/>
+  <text class="box-title" x="660" y="205" text-anchor="middle">etcd</text>
+  <text class="box-note" x="660" y="228" text-anchor="middle">cluster desired/observed state</text>
+
+  <rect class="control-box" x="835" y="145" width="285" height="72"/>
+  <text class="box-title" x="978" y="174" text-anchor="middle">Controllers</text>
+  <text class="box-note" x="978" y="197" text-anchor="middle">Deployment / ReplicaSet / Job / PV …</text>
+
+  <rect class="control-box" x="835" y="250" width="285" height="72"/>
+  <text class="box-title" x="978" y="279" text-anchor="middle">kube-scheduler</text>
+  <text class="box-note" x="978" y="302" text-anchor="middle">filter / score / bind Pod → Node</text>
+
+  <path class="control-line" d="M200 206 H300"/>
+  <text class="label" x="250" y="194" text-anchor="middle">API write/watch</text>
+  <path class="control-bi" d="M490 214 H575"/>
+  <path class="control-bi" d="M835 181 H785 Q770 181 770 198 H745"/>
+  <path class="control-bi" d="M835 286 H790 Q770 286 770 240 H745"/>
+
+  <rect class="node-zone zone" x="245" y="410" width="985" height="330"/>
+  <text class="zone-title" x="270" y="442">Node / Workload Plane</text>
+  <text class="box-note" x="477" y="442">异步准备后，在 sandbox、volume、image 等 ready gate 汇合</text>
+
+  <rect class="node-box" x="300" y="475" width="185" height="76"/>
+  <text class="box-title" x="392" y="504" text-anchor="middle">kubelet</text>
+  <text class="box-note" x="392" y="527" text-anchor="middle">per-Pod sync / status</text>
+
+  <rect class="node-box" x="565" y="465" width="210" height="76"/>
+  <text class="box-title" x="670" y="494" text-anchor="middle">CRI Runtime</text>
+  <text class="box-note" x="670" y="517" text-anchor="middle">sandbox / image / container</text>
+
+  <rect class="plugin-box" x="565" y="570" width="210" height="64"/>
+  <text class="box-title" x="670" y="597" text-anchor="middle">CNI</text>
+  <text class="box-note" x="670" y="618" text-anchor="middle">netns / veth / IPAM</text>
+
+  <rect class="plugin-box" x="300" y="585" width="185" height="64"/>
+  <text class="box-title" x="392" y="612" text-anchor="middle">CSI / volume manager</text>
+  <text class="box-note" x="392" y="633" text-anchor="middle">attach / stage / publish</text>
+
+  <rect class="node-box" x="900" y="480" width="210" height="105"/>
+  <text class="box-title" x="1005" y="512" text-anchor="middle">Pod Sandbox</text>
+  <text class="box-note" x="1005" y="536" text-anchor="middle">containers + namespaces</text>
+  <text class="box-note" x="1005" y="557" text-anchor="middle">application readiness</text>
+
+  <rect class="node-box" x="870" y="655" width="270" height="58"/>
+  <text class="box-title" x="1005" y="680" text-anchor="middle">Service Network Data Plane</text>
+  <text class="box-note" x="1005" y="701" text-anchor="middle">kube-proxy / eBPF / CNI routing</text>
+
+  <rect class="external-box" x="35" y="655" width="165" height="58"/>
+  <text class="box-title" x="117" y="689" text-anchor="middle">User Traffic</text>
+
+  <path class="control-line" d="M395 253 V385 Q395 400 392 400 V475"/>
+  <text class="label" x="405" y="397">watch assigned Pod</text>
+  <path class="node-line" d="M485 505 H565"/>
+  <text class="label" x="525" y="493" text-anchor="middle">CRI</text>
+  <path class="node-line conditional" d="M670 541 V570"/>
+  <path class="node-line conditional" d="M485 617 H535 Q550 617 550 540 H565"/>
+  <path class="node-line" d="M775 503 H900"/>
+  <text class="label" x="837" y="491" text-anchor="middle">create/start</text>
+  <path class="data-line" d="M200 684 H870"/>
+  <path class="data-line" d="M1005 655 V585"/>
+
+  <rect class="callout" x="35" y="285" width="165" height="90"/>
+  <text class="box-title" x="117" y="313" text-anchor="middle">Per-Pod Control</text>
+  <text class="box-note" x="117" y="337" text-anchor="middle">对象、调度、状态</text>
+  <text class="box-note" x="117" y="358" text-anchor="middle">都经过 API Server</text>
+
+  <text class="subtitle" x="270" y="780">结论：steady-state 请求不经过 API Server，但仍依赖 Kubernetes 已配置的 Pod、Service、CNI 与 volume data path。</text>
+</svg>

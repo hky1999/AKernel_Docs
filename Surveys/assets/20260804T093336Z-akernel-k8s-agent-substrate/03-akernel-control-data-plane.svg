@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 930" role="img" aria-labelledby="title desc">
+  <title id="title">AKernel control plane and data plane</title>
+  <desc id="desc">In Kubernetes deployment mode, Kubernetes hosts AKernel master, frontend and privileged node DaemonSet. Per-sandbox lifecycle bypasses Kubernetes and flows through openYuanRong to sandboxd, which prepares pooled cgroups, veth interfaces and rootfs before fresh runsc creation.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #526079; }
+      .zone-title { font-size: 18px; font-weight: 700; }
+      .box-title { font-size: 15px; font-weight: 700; }
+      .box-note { font-size: 12.5px; fill: #526079; }
+      .label { font-size: 12px; font-weight: 600; fill: #526079; }
+      .zone { rx: 18; stroke-width: 1.6; }
+      .k8s-zone { fill: #f5f9ff; stroke: #93b4ed; }
+      .control-zone { fill: #faf7ff; stroke: #b69ae8; }
+      .node-zone { fill: #f7fbf8; stroke: #8bc6a0; }
+      .k8s-box { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.6; rx: 11; }
+      .custom-box { fill: #f3e8ff; stroke: #7c3aed; stroke-width: 1.6; rx: 11; }
+      .black-box { fill: #f1f5f9; stroke: #475569; stroke-width: 1.7; stroke-dasharray: 7 5; rx: 11; }
+      .data-box { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.6; rx: 11; }
+      .resource-box { fill: #fff7ed; stroke: #ea580c; stroke-width: 1.5; rx: 11; }
+      .k8s-line { fill: none; stroke: #2563eb; stroke-width: 2; marker-end: url(#arrow-blue); }
+      .control-line { fill: none; stroke: #7c3aed; stroke-width: 2.4; marker-end: url(#arrow-purple); }
+      .node-line { fill: none; stroke: #475569; stroke-width: 2; marker-end: url(#arrow-gray); }
+      .data-line { fill: none; stroke: #16a34a; stroke-width: 4; marker-end: url(#arrow-green); }
+      .bypass { fill: none; stroke: #ea580c; stroke-width: 3; stroke-dasharray: 9 6; marker-end: url(#arrow-orange); }
+      .note { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.3; rx: 9; }
+    </style>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/></marker>
+    <marker id="arrow-purple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7c3aed"/></marker>
+    <marker id="arrow-gray" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#475569"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/></marker>
+  </defs>
+
+  <rect width="1320" height="930" fill="#ffffff"/>
+  <text class="title" x="40" y="45">AKernel：Kubernetes 托管集群组件，per-Sandbox 路径由专用节点栈执行</text>
+  <text class="subtitle" x="40" y="72">蓝色＝K8s 托管　紫色＝AKernel 可审源码　灰色虚线＝openYuanRong 预编译黑盒　绿色＝交互数据流</text>
+
+  <rect class="k8s-zone zone" x="30" y="100" width="1260" height="215"/>
+  <text class="zone-title" x="55" y="132">Kubernetes Hosting Plane · AKernel 集群部署模式</text>
+
+  <rect class="k8s-box" x="55" y="165" width="170" height="84"/>
+  <text class="box-title" x="140" y="196" text-anchor="middle">Terraform / Helm</text>
+  <text class="box-note" x="140" y="220" text-anchor="middle">install / rollout / config</text>
+
+  <rect class="k8s-box" x="285" y="165" width="180" height="84"/>
+  <text class="box-title" x="375" y="196" text-anchor="middle">kube-apiserver</text>
+  <text class="box-note" x="375" y="220" text-anchor="middle">component objects only</text>
+
+  <rect class="k8s-box" x="525" y="150" width="275" height="114"/>
+  <text class="box-title" x="662" y="180" text-anchor="middle">Long-lived AKernel Workloads</text>
+  <text class="box-note" x="662" y="204" text-anchor="middle">master StatefulSet</text>
+  <text class="box-note" x="662" y="225" text-anchor="middle">frontend / Traefik Deployment</text>
+  <text class="box-note" x="662" y="246" text-anchor="middle">etcd / monitoring</text>
+
+  <rect class="k8s-box" x="860" y="150" width="185" height="114"/>
+  <text class="box-title" x="952" y="180" text-anchor="middle">akernel-node</text>
+  <text class="box-note" x="952" y="204" text-anchor="middle">privileged DaemonSet</text>
+  <text class="box-note" x="952" y="225" text-anchor="middle">host disk / devices</text>
+  <text class="box-note" x="952" y="246" text-anchor="middle">one Pod per node</text>
+
+  <rect class="k8s-box" x="1105" y="150" width="155" height="114"/>
+  <text class="box-title" x="1182" y="180" text-anchor="middle">K8s Services</text>
+  <text class="box-note" x="1182" y="204" text-anchor="middle">Secret / ConfigMap</text>
+  <text class="box-note" x="1182" y="225" text-anchor="middle">PVC / Service</text>
+  <text class="box-note" x="1182" y="246" text-anchor="middle">Pod DNS / CNI</text>
+
+  <path class="k8s-line" d="M225 207 H285"/>
+  <path class="k8s-line" d="M465 207 H525"/>
+  <path class="k8s-line" d="M800 207 H860"/>
+  <path class="k8s-line" d="M1045 207 H1105"/>
+
+  <rect class="control-zone zone" x="30" y="350" width="1260" height="260"/>
+  <text class="zone-title" x="55" y="382">Dedicated Sandbox Control Plane · 不创建 per-Sandbox Kubernetes 对象</text>
+
+  <rect class="custom-box" x="55" y="435" width="155" height="82"/>
+  <text class="box-title" x="132" y="466" text-anchor="middle">AKernel SDK</text>
+  <text class="box-note" x="132" y="490" text-anchor="middle">Sandbox(options)</text>
+
+  <rect class="black-box" x="265" y="420" width="195" height="112"/>
+  <text class="box-title" x="362" y="450" text-anchor="middle">YR Frontend / IAM</text>
+  <text class="box-note" x="362" y="474" text-anchor="middle">API + instance handle</text>
+  <text class="box-note" x="362" y="495" text-anchor="middle">Traefik ingress</text>
+  <text class="box-note" x="362" y="516" text-anchor="middle">implementation not vendored</text>
+
+  <rect class="black-box" x="515" y="405" width="280" height="142"/>
+  <text class="box-title" x="655" y="436" text-anchor="middle">openYuanRong Master</text>
+  <text class="box-note" x="655" y="460" text-anchor="middle">global scheduler / metaservice</text>
+  <text class="box-note" x="655" y="481" text-anchor="middle">instance state / resource accounting</text>
+  <text class="box-note" x="655" y="502" text-anchor="middle">etcd-backed control state</text>
+  <text class="box-note" x="655" y="523" text-anchor="middle">algorithms are a binary boundary</text>
+
+  <rect class="black-box" x="850" y="420" width="190" height="112"/>
+  <text class="box-title" x="945" y="450" text-anchor="middle">YR Node Runtime</text>
+  <text class="box-note" x="945" y="474" text-anchor="middle">placement target</text>
+  <text class="box-note" x="945" y="495" text-anchor="middle">sandbox backend adapter</text>
+  <text class="box-note" x="945" y="516" text-anchor="middle">node resource feed</text>
+
+  <rect class="custom-box" x="1095" y="420" width="165" height="112"/>
+  <text class="box-title" x="1177" y="450" text-anchor="middle">sandboxd</text>
+  <text class="box-note" x="1177" y="474" text-anchor="middle">local Unix socket</text>
+  <text class="box-note" x="1177" y="495" text-anchor="middle">Start/Delete/Wait</text>
+  <text class="box-note" x="1177" y="516" text-anchor="middle">node-local manager</text>
+
+  <path class="control-line" d="M210 476 H265"/>
+  <path class="control-line" d="M460 476 H515"/>
+  <path class="control-line" d="M795 476 H850"/>
+  <path class="control-line" d="M1040 476 H1095"/>
+  <text class="label" x="1068" y="464" text-anchor="middle">UDS</text>
+
+  <path class="bypass" d="M132 565 H1180"/>
+  <text class="label" x="655" y="588" text-anchor="middle" fill="#c2410c">per-Sandbox：不创建 Pod、不调用 kube-scheduler/kubelet/CRI/CNI/CSI</text>
+
+  <path class="k8s-line" d="M375 249 V330 Q375 350 900 350 V420"/>
+  <text class="label" x="670" y="339">sandboxd node-resource module只读 watch Node / local Pods</text>
+
+  <rect class="node-zone zone" x="30" y="645" width="1260" height="235"/>
+  <text class="zone-title" x="55" y="677">Node Execution &amp; Data Plane</text>
+
+  <rect class="custom-box" x="55" y="720" width="190" height="98"/>
+  <text class="box-title" x="150" y="749" text-anchor="middle">Parallel Preparation</text>
+  <text class="box-note" x="150" y="773" text-anchor="middle">FS prepare ∥ resources</text>
+  <text class="box-note" x="150" y="794" text-anchor="middle">rollback on failure</text>
+
+  <rect class="resource-box" x="300" y="705" width="205" height="128"/>
+  <text class="box-title" x="402" y="735" text-anchor="middle">Host Resource Pools</text>
+  <text class="box-note" x="402" y="759" text-anchor="middle">cgroup idle pool</text>
+  <text class="box-note" x="402" y="780" text-anchor="middle">veth / IP idle pool</text>
+  <text class="box-note" x="402" y="801" text-anchor="middle">recycle / shrink</text>
+
+  <rect class="resource-box" x="560" y="705" width="205" height="128"/>
+  <text class="box-title" x="662" y="735" text-anchor="middle">Rootfs Data Path</text>
+  <text class="box-note" x="662" y="759" text-anchor="middle">singleflight / refcount</text>
+  <text class="box-note" x="662" y="780" text-anchor="middle">Nydus / distill-fs lazy IO</text>
+  <text class="box-note" x="662" y="801" text-anchor="middle">cache / dedup / object store</text>
+
+  <rect class="custom-box" x="820" y="720" width="185" height="98"/>
+  <text class="box-title" x="912" y="749" text-anchor="middle">runsc create</text>
+  <text class="box-note" x="912" y="773" text-anchor="middle">fresh OCI bundle</text>
+  <text class="box-note" x="912" y="794" text-anchor="middle">not a warm sandbox pool</text>
+
+  <rect class="data-box" x="1060" y="705" width="200" height="128"/>
+  <text class="box-title" x="1160" y="735" text-anchor="middle">gVisor Sandbox</text>
+  <text class="box-note" x="1160" y="759" text-anchor="middle">_SandboxInstance actor</text>
+  <text class="box-note" x="1160" y="780" text-anchor="middle">user child processes</text>
+  <text class="box-note" x="1160" y="801" text-anchor="middle">physical sandbox ID</text>
+
+  <path class="node-line" d="M245 769 H300"/>
+  <path class="node-line" d="M505 769 H560"/>
+  <path class="node-line" d="M765 769 H820"/>
+  <path class="node-line" d="M1005 769 H1060"/>
+
+  <path class="data-line" d="M55 853 H1060"/>
+  <text class="label" x="555" y="848" text-anchor="middle" fill="#15803d">commands/files：Actor RPC　·　PTY/port：Traefik + physical ID route</text>
+
+  <rect class="note" x="835" y="275" width="425" height="30"/>
+  <text class="label" x="1047" y="295" text-anchor="middle" fill="#c2410c">K8s模式依赖长期Pod；核心sandbox路径也可在standalone模式运行</text>
+</svg>
