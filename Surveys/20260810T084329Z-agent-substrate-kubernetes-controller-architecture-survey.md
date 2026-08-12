@@ -50,11 +50,11 @@ while process is alive:
 
 有，而且关系可以分成三层：
 
-1. **强依赖 Kubernetes 部署与治理**：`atenet-dns`、`atenet-router` 都是 Deployment/Service，使用 ServiceAccount、RBAC、Pod certificate 和 ConfigMap；
-2. **复用 Kubernetes 网络基础设施**：Actor DNS 先经过 cluster DNS 和 ClusterIP Service，router 到 Worker 依赖 CNI PodIP 和 NetworkPolicy；
+1. **由 Kubernetes 承载和治理**：同一个 `atenet` binary 的 `dns`、`router` 子命令被部署为两个 Deployment/Service，二者都有 ServiceAccount/RBAC；DNS Pod 通过共享 `emptyDir` 配置附带 CoreDNS，router Pod 通过 ConfigMap 配置附带 Envoy，并使用 PodCertificate/ClusterTrustBundle projected volume；
+2. **复用 Kubernetes 网络基础设施**：Actor DNS 先经过 cluster DNS 和两个 ClusterIP Service；HTTP 入口经过 router ClusterIP Service；router 到 Worker 使用 CNI/Pod network 提供的 direct PodIP 可达性，并受支持 NetworkPolicy 的网络实现约束；
 3. **旁路 per-Actor Kubernetes 控制路径**：ext_proc 调 `ateapi.ResumeActor`，从 Substrate store 得到 Worker PodIP，再由 Envoy 直连 Worker `atunnel:443`；不为每个 Actor 创建 Pod、Service、EndpointSlice 或 Ingress。
 
-所以不能笼统说“atenet 在 Kubernetes 外部”，也不能说它“绕过 Kubernetes 网络”。准确说法是：**atenet 嵌入 Kubernetes 的部署、DNS、Service 和 Pod 网络，但旁路 Kubernetes 的 per-Actor object、placement 和 backend convergence。**
+所以不能笼统说“atenet 在 Kubernetes 外部”，也不能说它“绕过 Kubernetes 网络”。准确说法是：**atenet 嵌入 Kubernetes 的部署、DNS、Service 和 Pod 网络，但旁路 Kubernetes 的 per-Actor object、placement 和 backend convergence。** 它不是 `kube-controller-manager`、CNI、`kube-proxy` 或默认 cluster DNS 的组成部分。
 
 ## 2. 调研方法与版本边界
 
@@ -207,6 +207,95 @@ ctrl.NewControllerManagedBy(mgr).
 
 WorkerPool apply 还设置 `WorkerPool -> Deployment` owner reference，因此 WorkerPool 删除时可以由 Kubernetes garbage collector 级联清理 Deployment。ActorTemplate 当前删除分支只检测 `DeletionTimestamp` 后返回，没有添加/移除 finalizer，也没有删除 golden Actor 或 snapshot 的清理逻辑；这是当前实现的明确缺口，而不是 Kubernetes controller 定义的限制。
 
+### 4.5 Golden snapshot 的生产与消费不是同一条控制回路
+
+ActorTemplate controller 只负责**生产模板级基线并发布引用**；普通 Actor 的首次恢复由 ateapi 在另一条高频 workflow 中消费这个引用。完整关系如下：
+
+```mermaid
+flowchart LR
+    AT[ActorTemplate CR] -->|watch / reconcile| C[ActorTemplateReconciler]
+    C -->|CreateActor| GA[golden Actor record<br/>ate-golden / Template UID]
+    C -->|ResumeActor| API[ateapi resume workflow]
+    API -->|no latest snapshot<br/>no golden snapshot yet| W[warm Worker Pod]
+    W -->|atelet Run| RT[ateom cold boot<br/>runsc or microVM]
+    C -->|SuspendActor after readiness / warm-up| CP[atelet + ateom checkpoint]
+    CP --> OBJ[(object store<br/>manifest + checkpoint files)]
+    CP --> META[(Valkey / Redis<br/>immutable ActorSnapshot metadata)]
+    META -->|snapshot name| ATS[ActorTemplate.status.goldenSnapshot]
+
+    UA[ordinary Actor<br/>initially SUSPENDED] -->|first ResumeActor| LOOKUP{snapshot selection}
+    LOOKUP -->|own latestSnapshot first| OWN[ordinary Actor snapshot]
+    LOOKUP -->|otherwise template golden| OBJ
+    OBJ -->|download to target Actor UID's<br/>private restore-state| RW[another warm Worker]
+    RW -->|rebuild OCI bundle + restore| PRIVATE[private running Actor state]
+```
+
+这里有四个源码事实：
+
+1. Golden Actor 的名字稳定地取 `ActorTemplate.UID`，并放在保留的 `ate-golden` Atespace；controller 使用的仍是普通 `CreateActor`、`ResumeActor`、`SuspendActor` RPC，而不是一套特殊 runtime API（`actortemplate_controller.go:81-170`）。
+2. Golden Actor 第一次 resume 必然走 cold boot：新 Actor 没有自己的 `latestSnapshot`，模板此时也还没有 `status.goldenSnapshot`，所以 workflow 落到 `RunRequest`（`workflow_resume.go:86-105,502-524`）。`ResumeActor --boot` 则显式跳过模板 golden snapshot。
+3. 普通 `CreateActor` 默认只创建一个 `SUSPENDED` record，不会把 golden snapshot 复制到 `Actor.latestSnapshot`；首次 resume 才动态读取模板 status（`create_actor.go:102-120`、`workflow_resume.go:96-105`）。
+4. 恢复请求使用 golden snapshot 的物理 location，但传给 atelet 的 Actor UID、名字和 workload spec 都属于目标普通 Actor（`workflow_resume.go:449-501`）。普通 Actor 第一次 suspend 后，才拥有自己的 `latestSnapshot`；以后恢复时它优先于模板 golden snapshot。
+
+这意味着 `status.goldenSnapshot` 是模板级的**共享基线引用**，不是复制到每个 Actor record 中的 mutable parent pointer。ActorTemplate controller 也不在每次普通 Actor resume 时运行；它离开高频路径后，ateapi 直接读取 informer cache 中的模板 status。
+
+### 4.6 Golden snapshot、普通 snapshot、OCI image 与 warm Worker
+
+这四个概念分别位于“模板状态、实例状态、静态文件、物理容量”四个层次，不能混为一个所谓 warm image：
+
+| 概念 | 属于谁/存在哪里 | 包含什么 | 不包含什么 | 生命周期作用 |
+|---|---|---|---|---|
+| Golden snapshot | ActorTemplate 通过 `status.goldenSnapshot` 指向；snapshot bytes 在对象存储，元数据在 Valkey/Redis | 按 `onCommit` scope 保存初始化后的模板级执行基线；`Full` 可含进程/VM 内存和 rootfs delta | 不是 Kubernetes object；不是正在运行的 Worker；不是 OCI image layers | 没有自身 snapshot 的 Actor 首次 resume 时使用 |
+| 普通 Actor snapshot | `Actor.latestSnapshot` 指向；同样由对象存储 + Valkey/Redis 承载 | 该逻辑 Actor 在最近一次 suspend 时的状态 | 不与其他 Actor 共享逻辑可写状态 | 后续 resume 优先恢复该 Actor 自身状态 |
+| OCI image | registry 与节点 content-addressed image cache | workload 的只读代码、依赖和 rootfs lower layers | 不含已初始化进程内存；不等于 checkpoint | fresh boot 和 restore 都用它重建 OCI bundle/lower rootfs |
+| Warm Worker | WorkerPool Deployment 预创建的 Kubernetes Pod，内部运行 ateom/atunnel | 已就绪的外层 Pod、网络、runtime 执行槽 | 空闲时不携带某个 Actor 的业务内存或 writable rootfs | 被 ateapi claim，承载一次 Actor run/restore |
+
+因此两种“warm”需要严格区分：**warm Worker** 消除外层 Pod 创建、调度和 CNI materialization 延迟；**Full golden snapshot** 消除 Actor 应用初始化和部分内存恢复延迟。只有前者而没有 Full snapshot，仍可能需要 application cold boot；只有 snapshot 而没有空闲 Worker，也仍需等待容量。
+
+### 4.7 Snapshot scope 决定它是不是 memory-warm clone
+
+`ActorTemplate.spec.snapshotsConfig` 定义两种 scope（`actortemplate_types.go:253-292`）：
+
+- `Full`：进程内存，加上 OCI image 之上的 filesystem delta，并包括 DurableDir；
+- `Data`：只保存支持 snapshot 的 DurableDir，不包含进程内存和其余 rootfs。
+
+ActorTemplate controller 没有把 golden snapshot 强制为 `Full`；Suspend 请求直接沿用模板的 `onCommit`（`workflow_suspend.go:155-176`）。所以“golden snapshot 等于预热内存镜像”只在 `onCommit: Full` 时成立。若它是 `Data`：
+
+- gVisor restore 会重新 create/start pause container 和 application containers，只把 DurableDir 数据恢复进去（`cmd/ateom-gvisor/main.go:529-578`）；
+- microVM 路径明确执行 cold boot，只在启动前恢复 DurableDir（`cmd/ateom-microvm/restore.go:43-107`）。
+
+论文中若测量 golden restore latency，必须同时报告 sandbox class、snapshot scope、snapshot bytes、节点 OCI/runtime cache 状态和 Worker 是否已空闲，否则无法判断加速来自哪一层。
+
+### 4.8 哪些内容共享，哪些内容是每 Actor 私有
+
+Golden restore 不是进程 `fork()`，当前源码也没有证明多个活 Actor 对同一组 golden memory pages 做跨 Actor RAM COW。准确边界是：
+
+| 状态 | 是否共享 | 源码语义 |
+|---|---|---|
+| 对象存储中的 immutable golden checkpoint blob | 逻辑共享 | 多个 Actor 可以读取同一 snapshot location |
+| 节点 OCI unpacked layers 与 page cache | 节点内共享、只读 | imagecache 按内容寻址保存 lower layers |
+| sandbox runtime asset cache | 节点内共享、按 SHA256 | manifest 指定的 runsc/CH 等二进制可命中本地 cache |
+| restore-state 文件 | 每 Actor 私有 | external checkpoint 下载到目标 Actor UID 对应目录（`atelet/main.go:517-594,676-693`） |
+| OCI writable upper/work | 每 Actor 私有 | bundle-local overlay upper/work；写入不会修改共享 lower（`imagecache/bundle_linux.go:33-95`） |
+| 进程/VM RAM 与 runtime state | 每 Actor 私有 | 每次 restore 创建独立 runsc/VM incarnation |
+| DurableDir 恢复后的内容 | 每 Actor 私有 | snapshot 数据被恢复到该 Actor 的 volume 目录 |
+
+gVisor 的 `runsc restore -direct -background` 可以从 checkpoint 文件按需读取页；microVM 的 Cloud Hypervisor `OnDemand`/userfaultfd 也从 restore source demand-page。但这里的 source 位于每个目标 Actor 的私有 restore directory，属于“从文件惰性恢复”，不能据此写成“活 Actor 共享 golden RAM 并写时复制”。真正明确共享的是 immutable snapshot object、只读 OCI lower layers/page cache 和 runtime asset cache。
+
+### 4.9 版本 pinning、身份与一致性边界
+
+一个 Full checkpoint 不能脱离创建它的 runtime 和 workload 文件系统随意恢复，因此实现做了三层 pinning：
+
+1. **Template/image**：ActorTemplate spec immutable；pause 和 application image 必须带 digest（`actortemplate_types.go:106-110,302-311,381-392`）。ActorSnapshot 控制面元数据还保存 template UID（`workflow_suspend.go:258-267`）。
+2. **Runtime**：fresh Run 从 WorkerPool 的 SandboxConfig 解析 runtime assets；atelet 记录实际 sandbox class、asset URL 和 SHA256。Checkpoint 读取这份 on-node record，并把它写进 snapshot `manifest.json`；Restore 先读 manifest，再获取完全相同的 runtime assets（`sandbox_assets.go:53-94`、`atelet/main.go:340-359,524-625`）。
+3. **Rootfs**：snapshot 不打包 OCI image layers。Restore 按 immutable template 重新准备 OCI bundles，只把 snapshot 中的 memory/filesystem delta 叠回去（`atelet/main.go:580-590`）。
+
+这里仍有一个值得记录的校验差异：从显式 tagged snapshot clone Actor 时，`CreateActor` 会要求 snapshot 的 template UID 与目标 template UID 一致（`create_actor.go:37-85`）；自动 golden restore 路径则直接信任当前 `ActorTemplate.status.goldenSnapshot`，没有再次比较 snapshot metadata 中的 template UID。由于 template spec 和 UID 在正常 K8s 生命周期内稳定，这通常成立，但它仍是控制面引用完整性边界。
+
+身份也不能简单冻结在 golden 内存中。项目文档明确指出，golden actor 启动时解析的 Secret 环境变量会被 Full snapshot 捕获；Secret 更新不会自动使旧 snapshot 失效（`docs/api-guide.md:109`）。Actor 名字则不能用普通环境变量注入，否则所有实例都会继承 golden Actor 的值；atelet 在每次 resume 时重新生成 Actor 私有的 `/run/ate/actor-id` bind mount（`atelet/oci.go:36-50`、`atelet/main.go:696-713`）。平台修复了这个标准身份入口，但 workload 若在 golden warm-up 阶段自行把随机数、连接令牌或实例身份缓存进内存，仍可能被所有 Full golden restores 继承。
+
+最后，checkpoint 文件、Valkey metadata 和 Kubernetes status 跨三个持久化域，不存在原子事务：manifest 最后上传可避免暴露未完成的文件集合，但 object upload 成功、ActorSnapshot metadata 创建和 `ActorTemplate.status` 更新之间仍可能留下 orphan object 或可重试中间态。第 9 节的删除、finalizer、幂等和 worker leak 风险应据此理解。
+
 ## 5. Agent Substrate 的完整架构分层
 
 ### 5.1 先区分“设计意图”和“当前实现”
@@ -323,6 +412,72 @@ flowchart TB
 - ateapi 通过 informer 从 Kubernetes 同步模板和 physical worker inventory，因此是 Kubernetes-aware specialized control plane；
 - Actor 热路径不创建 per-Actor Kubernetes 对象，但仍在 Kubernetes 已建立的 Pod 网络和安全边界上运行。
 
+### 5.3.1 如何叠加到 Kubernetes 官方 Figure 1
+
+官方 [Figure 1: Kubernetes cluster components](https://kubernetes.io/docs/concepts/architecture/) 是 Kubernetes 的参考部署图，不是把所有使用 Kubernetes API 的程序都画进 `kube-controller-manager` 的图。把 Substrate 叠加到该图时应遵循下面的放置规则：
+
+| 官方图中的区域 | 应放入的 Substrate 组件 | 为什么这样放 | 不应怎样画 |
+|---|---|---|---|
+| **Control plane** | 仍只画 `kube-apiserver`、`etcd`、`kube-scheduler`、`kube-controller-manager`（以及云环境中的 `cloud-controller-manager`） | 这些是 Kubernetes 原生进程；`kube-controller-manager` 运行的是 Deployment、ReplicaSet、Node、EndpointSlice 等内置 controller | 不要把 `atecontroller`、`ateapi` 或 `atenet` 画成 `kube-controller-manager` 的子模块 |
+| **Node components** | 没有 Substrate binary 属于 Kubernetes 原生 node component；原生项仍是 `kubelet`、CRI 和可选的 `kube-proxy`/等价 Service 实现 | `atelet` DaemonSet Pod 与 Worker Pod 应画在同一个 Node 框内、但放在 **Pods/workloads** 一侧；它们由 kubelet/CRI 启动 | 不要把 `atelet` 误标为 kubelet/CRI，也不要把每个 Actor 画成一个 Kubernetes Pod |
+| **Add-ons: DNS / networking** | 在 cluster DNS 旁加 `atenet-dns` Deployment/Service；在 Pod network 上加 `atenet-router` 到 Worker PodIP 的链路 | `atenet-dns` 扩展 actor suffix，router 复用 Service 和 Pod network；它们不是 CNI、kube-proxy 或默认 cluster DNS 的内置模块 | `atenet-dns` 是额外 CoreDNS Deployment，并通过 API 更新 `kube-system/kube-dns` 的 stub domain；不能直接把它替换成图中的 cluster DNS |
+| **Pods / extension workloads** | `atecontroller`、`ate-api-server`、`atenet-router`、`podcertcontroller`、`atelet`、Worker、集群内 Valkey；API Server 旁标注 `ActorTemplate`/`WorkerPool`/`SandboxConfig` CRD | 这些 binary 通常作为 Deployment/DaemonSet/StatefulSet Pod 运行；CRD 由 API Server/etcd 保存 | 不要把 Valkey 中的 Actor/Worker record 画成 etcd object，也不要把 `ateapi` 画成 kube-apiserver 的扩展进程 |
+| **Cluster external / deployment dependent** | GCS/S3 等对象存储，以及可选的托管 Valkey/Redis | 它们通过网络和工作负载身份被 Substrate 使用，不是 Kubernetes cluster component；Kind demo 的 RustFS、仓库默认 Valkey 则可以作为集群内 Pod 部署 | 不要因 manifest 提供了集群内部署样例，就断言生产实现必须把存储嵌入 Kubernetes |
+
+因此，图上的“Substrate control plane”是**功能分层**，不是 Kubernetes 官方图中的物理 control-plane box：`atecontroller` 通过 Kubernetes API 做低频声明式收敛；`ateapi`、Valkey、`atelet` 和 `ateom` 组成高频 Actor lifecycle control path，其中大部分以普通 Kubernetes Pod/DaemonSet 运行。`kube-controller-manager` 只在这些 Kubernetes 对象的间接生命周期中出现：例如 `WorkerPool -> Deployment -> ReplicaSet -> Worker Pod`，或 `atecontroller` 自身 Deployment 的副本维护。
+
+可以在官方图旁边加上如下边界标注：
+
+```mermaid
+flowchart LR
+    subgraph CP[原生 Kubernetes Control Plane]
+        API[kube-apiserver]
+        ETCD[(etcd)]
+        KCM[kube-controller-manager]
+        SCH[kube-scheduler]
+        API <--> ETCD
+        KCM -->|watch / write built-in objects| API
+        SCH -->|watch unbound Pods / write binding| API
+    end
+
+    subgraph EXT[Substrate extension API 与通常由 Kubernetes 承载的服务]
+        CRD[(ActorTemplate / WorkerPool / SandboxConfig CRD)]
+        CTRL[atecontroller]
+        AAPI[ate-api-server]
+        DNS[atenet-dns + CoreDNS]
+        ROUTER[atenet-router + Envoy]
+        CERT[podcertcontroller]
+        VALKEY[(Valkey / Redis)]
+    end
+
+    subgraph NODE[每个 Kubernetes node]
+        KL[kubelet + CRI]
+        LET[atelet DaemonSet Pod]
+        WP[Worker Pod: ateom + atunnel]
+        INNER[内层 Actor sandbox<br/>runsc 或 Kata/Cloud Hypervisor]
+        NET[CNI Pod network<br/>PodIP / NetworkPolicy]
+        KL --> LET
+        KL --> WP
+        LET --> WP
+        WP --> INNER
+        NET --- WP
+    end
+
+    CRD --> API
+    CTRL -->|watch CR / write status / apply Deployment| API
+    CTRL -->|golden Actor RPC| AAPI
+    AAPI -->|informer: CR / Worker Pod / atelet| API
+    AAPI <--> VALKEY
+    DNS -->|Service GET + kube-dns ConfigMap update| API
+    ROUTER -->|ActorTemplate list / health| API
+    ROUTER -->|ResumeActor| AAPI
+    CERT --> API
+    API -->|kubelet watches Pods bound to this node| KL
+    ROUTER -->|ClusterIP ingress; then direct Worker PodIP:443| NET
+```
+
+图中 `EXT` 的所有进程都可以是 Kubernetes Pod，但这只说明“由 Kubernetes 承载”，不说明它们是 Kubernetes control-plane component。`NET` 表示 CNI/Service 实现提供的承载和过滤；`atenet` 使用这层已建立的网络，却不为每个 Actor 创建 Service、EndpointSlice 或 Pod。
+
 ### 5.4 组件边界总表
 
 | 组件/对象 | 当前部署/代码形态 | 与 Kubernetes 的准确关系 | 主要职责 | Actor 热路径角色 |
@@ -331,7 +486,8 @@ flowchart TB
 | kube-controller-manager | Kubernetes 原生进程 | 内置 Deployment/ReplicaSet/HPA 等 controller | 将 Deployment/HPA 等收敛成 Pod 数量 | Worker 扩缩容时参与；不调度普通 Actor |
 | kube-scheduler | Kubernetes 原生进程 | 为未绑定的外层 Pod选择 Node | Worker/atelet/control-plane Pod placement | Worker Pod 创建时参与；Actor resume 不参与 |
 | kubelet + CRI | 每节点 | 创建 atelet、Worker 和其他 Substrate 外层 Pod | 外层 Pod/container lifecycle | 不创建内层 Actor sandbox |
-| CNI / Service data plane | 每节点/网络插件 | 提供 PodIP、ClusterIP 可达性并执行 NetworkPolicy | 外层 Pod 网络 | DNS/router/ateapi/Worker 通信持续依赖 |
+| `kube-proxy` 或等价 Service dataplane | 每节点（可由 eBPF/CNI 等价实现替代） | 把 ClusterIP Service 流量转到 Service endpoints；headless `api` Service 不提供 VIP | `atenet-router`、`atenet-dns`、ateapi 服务发现 | DNS/入口使用 ClusterIP；router 到 Worker 不依赖 per-Actor Service |
+| CNI plugin + NetworkPolicy enforcement | 每节点/网络插件 | 分配 PodIP、建立 Pod 间路由，并在插件支持时执行 NetworkPolicy | 外层 Pod 网络和 Worker ingress 隔离 | router 到 Worker 的 direct PodIP:443 依赖 Pod 网络；策略只提供允许/拒绝，不负责路由 |
 | `ActorTemplate` | namespaced CRD | 存于 Kubernetes API/etcd | immutable workload/snapshot blueprint | ateapi 通常从 informer cache 读取 |
 | `WorkerPool` | namespaced CRD，带 scale subresource | `atecontroller` 将其变为 Deployment/NetworkPolicy | warm Worker capacity | 扩缩容为后台路径 |
 | `SandboxConfig` | cluster-scoped CRD | ateapi 从 informer/lister 解析 runtime assets | pin gVisor/microVM assets | fresh boot/restore 配置来源 |
@@ -690,21 +846,29 @@ Agent Substrate 提供一个清晰的参照：
 9. [WorkerPool Deployment builder](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/workerpool_apply.go)
 10. [ActorTemplate API type](../../agent-substrate/substrate/pkg/api/v1alpha1/actortemplate_types.go)
 11. [ateapi Control proto](../../agent-substrate/substrate/pkg/proto/ateapipb/ateapi.proto)
-12. [atenet overview](../../agent-substrate/substrate/cmd/atenet/README.md)
-13. [atenet DNS reconcile](../../agent-substrate/substrate/cmd/atenet/internal/dns/dns.go)
-14. [atenet DNS wildcard Corefile](../../agent-substrate/substrate/cmd/atenet/internal/dns/corefile.go)
-15. [atenet router controller](../../agent-substrate/substrate/cmd/atenet/internal/router/controller.go)
-16. [atenet router request processor](../../agent-substrate/substrate/cmd/atenet/internal/router/extproc.go)
-17. [atenet router xDS](../../agent-substrate/substrate/cmd/atenet/internal/router/xds.go)
-18. [atenet DNS manifest](../../agent-substrate/substrate/manifests/ate-install/atenet-dns.yaml)
-19. [atenet router manifest](../../agent-substrate/substrate/manifests/ate-install/atenet-router.yaml)
-20. [ateapi WorkerPoolSyncer](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/syncer.go)
-21. [ateapi Kubernetes informers](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/informer.go)
-22. [WorkerPool NetworkPolicy controller](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/networkpolicy_controller.go)
-23. [Worker Pod builder](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/workerpool_apply.go)
-24. [atelet node supervisor](../../agent-substrate/substrate/cmd/atelet/main.go)
-25. [atunnel request validation and proxy](../../agent-substrate/substrate/internal/atunnel/server.go)
-26. [pod certificate signer controller](../../agent-substrate/substrate/cmd/podcertcontroller/internal/signercontroller/signercontroller.go)
+12. [Actor create workflow](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/create_actor.go)
+13. [Actor resume workflow](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/workflow_resume.go)
+14. [Actor suspend workflow](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/workflow_suspend.go)
+15. [atelet snapshot/runtime manifest](../../agent-substrate/substrate/cmd/atelet/main.go)
+16. [atelet sandbox asset record](../../agent-substrate/substrate/cmd/atelet/sandbox_assets.go)
+17. [ateom gVisor runtime](../../agent-substrate/substrate/cmd/ateom-gvisor/main.go)
+18. [ateom microVM restore](../../agent-substrate/substrate/cmd/ateom-microvm/restore.go)
+19. [node-local OCI image cache](../../agent-substrate/substrate/internal/imagecache/README.md)
+20. [atenet overview](../../agent-substrate/substrate/cmd/atenet/README.md)
+21. [atenet DNS reconcile](../../agent-substrate/substrate/cmd/atenet/internal/dns/dns.go)
+22. [atenet DNS wildcard Corefile](../../agent-substrate/substrate/cmd/atenet/internal/dns/corefile.go)
+23. [atenet router controller](../../agent-substrate/substrate/cmd/atenet/internal/router/controller.go)
+24. [atenet router request processor](../../agent-substrate/substrate/cmd/atenet/internal/router/extproc.go)
+25. [atenet router xDS](../../agent-substrate/substrate/cmd/atenet/internal/router/xds.go)
+26. [atenet DNS manifest](../../agent-substrate/substrate/manifests/ate-install/atenet-dns.yaml)
+27. [atenet router manifest](../../agent-substrate/substrate/manifests/ate-install/atenet-router.yaml)
+28. [ateapi WorkerPoolSyncer](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/syncer.go)
+29. [ateapi Kubernetes informers](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/informer.go)
+30. [WorkerPool NetworkPolicy controller](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/networkpolicy_controller.go)
+31. [Worker Pod builder](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/workerpool_apply.go)
+32. [atelet node supervisor](../../agent-substrate/substrate/cmd/atelet/main.go)
+33. [atunnel request validation and proxy](../../agent-substrate/substrate/internal/atunnel/server.go)
+34. [pod certificate signer controller](../../agent-substrate/substrate/cmd/podcertcontroller/internal/signercontroller/signercontroller.go)
 
 ### 关键源码证据索引
 
@@ -712,6 +876,12 @@ Agent Substrate 提供一个清晰的参照：
 |---|---|
 | atecontroller 的一个 Manager 注册三个 reconciler | [`main.go:87`](../../agent-substrate/substrate/cmd/atecontroller/main.go#L87) |
 | ActorTemplate controller watch CR 并驱动 golden lifecycle | [`actortemplate_controller.go:65`](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/actortemplate_controller.go#L65)、[`actortemplate_controller.go:190`](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/actortemplate_controller.go#L190) |
+| Golden Actor 初次 cold boot 与普通 Actor snapshot 优先级 | [`workflow_resume.go:86`](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/workflow_resume.go#L86)、[`workflow_resume.go:502`](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/workflow_resume.go#L502) |
+| 普通 CreateActor 默认 SUSPENDED、不复制 golden snapshot | [`create_actor.go:102`](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/create_actor.go#L102) |
+| Snapshot metadata 保存 source/template UID，Redis SETNX 创建 | [`workflow_suspend.go:258`](../../agent-substrate/substrate/cmd/ateapi/internal/controlapi/workflow_suspend.go#L258)、[`ateredis.go:438`](../../agent-substrate/substrate/cmd/ateapi/internal/store/ateredis/ateredis.go#L438) |
+| Full/Data scope 定义及 immutable image 校验 | [`actortemplate_types.go:253`](../../agent-substrate/substrate/pkg/api/v1alpha1/actortemplate_types.go#L253)、[`actortemplate_types.go:301`](../../agent-substrate/substrate/pkg/api/v1alpha1/actortemplate_types.go#L301) |
+| manifest pin runtime、restore 私有目录和重建 OCI bundle | [`sandbox_assets.go:53`](../../agent-substrate/substrate/cmd/atelet/sandbox_assets.go#L53)、[`atelet/main.go:517`](../../agent-substrate/substrate/cmd/atelet/main.go#L517)、[`atelet/main.go:580`](../../agent-substrate/substrate/cmd/atelet/main.go#L580) |
+| OCI lower 共享、overlay upper 私有 | [`imagecache/README.md:1`](../../agent-substrate/substrate/internal/imagecache/README.md#L1)、[`bundle_linux.go:33`](../../agent-substrate/substrate/internal/imagecache/bundle_linux.go#L33) |
 | WorkerPool controller apply Deployment | [`workerpool_controller.go:81`](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/workerpool_controller.go#L81) |
 | Worker Pod 只有 ateom 外层 container，使用 shared hostPath | [`workerpool_apply.go:58`](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/workerpool_apply.go#L58) |
 | NetworkPolicy 只允许 atenet-router ingress Worker | [`networkpolicy_controller.go:89`](../../agent-substrate/substrate/cmd/atecontroller/internal/controllers/networkpolicy_controller.go#L89) |
