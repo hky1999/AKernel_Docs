@@ -17,7 +17,7 @@
 | spawn(同模板) | 31–66 ms/实例,16 并发 wall 89 ms | (开源 v0.1.0 无池化;README 40ms 为 planned) |
 | checkpoint(park) | pause 62–143 ms(增量,~O(dirty)) | 分支 park 133 ms @S=1G(**对 S 平坦,O(1)**);stock 1236 ms |
 | restore(unpark) | resume 80–110 ms | 分支 unpark 244 ms @1G(平坦);stock 2195 ms |
-| fork/fanout | ~195–250 ms/个,但**每个 fork 物化 O(脏内存+父可写层) 磁盘**(100MiB 脏 → +231 MiB) | N×FICLONE + restore,**磁盘增量 0**,N=64 逐实例 ~195–290 ms |
+| fork/fanout | ~195–250 ms/个,一次性物化 **O(脏内存)** 共享 mem 层(2026-08-21 修正:同父 child 共享一份,非每 child 一份) | N×FICLONE + restore,**磁盘增量 0**,N=64 逐实例 ~195–290 ms |
 | 写路径 CoW | 块级 512B segment(LSMT log-structured upper) | 文件级 reflink(XFS FICLONE,4K extent) |
 | 内存共享 | rootfs 只读层共享;restore 时同 mem image 共享一个只读 ublk 设备 | rootfs mmap 共享 page cache;派生副本共享物理 extent |
 | 内存恢复 | 全量映射 File backend + dirty tracking(uffd lazy 路径已写未启用) | statefile 反序列化 O(M)(1GiB ~470ms) |
@@ -109,7 +109,7 @@ rootfs/{image.json, upper.data}           # fork 自己的新可写层
 
 语义验证:fork 内可见父的全部内存+文件状态(big.bin/big2.bin/marker 均在);fork 内修改不影响父(块级隔离)✓。
 
-**关键观察:fork 的磁盘成本 = O(父脏内存 + 父可写层),每个 fork 各自物化一份 mem 层**(同一父的 3 个 fork 各有 122 MiB mem_overlaybd)。fork 间共享的只有 rootfs 只读层(inherited-layers 内容寻址)。这就是与 AKernel FICLONE fanout 最大的分野。
+**关键观察:fork 的磁盘成本 = O(父脏内存),一次性物化一份共享 mem 层**。~~初版本文曾记录"每个 fork 各自物化一份 mem 层(3 个 fork 各 122 MiB)"~~——2026-08-21 以 1GiB 脏复核(fork×3 du 增量 = 937 MiB ≈ 单份 915 MiB mem 层;fork×2 工件树仅一个 `mem_overlaybd/overlaybd.commit`),证实**同父所有 child 共享同一份 mem 层与封存 upper**,每个 child 只新建私有空 upper。仍与 AKernel FICLONE fanout 有本质差距:这里是线性物化真字节(写带宽付全价,0.9×S),AKernel 是元数据级 CoW(磁盘增量 0)。详见[后续评估文档](20260821T041720Z-pr14228-runsc-cr-optimization-eval-vs-agentenv-substrate.md)§4.2。
 
 ## 4. AKernel C/R 实现(gVisor fork + filestore 领养)
 
@@ -141,7 +141,7 @@ rootfs/{image.json, upper.data}           # fork 自己的新可写层
 
 ### 5.1 checkpoint/restore:增量 vs 零拷贝
 
-- **AgentEnv pause 的成本模型是 O(dirty)**:KVM dirty tracking + process_vm_readv 只读脏页。稳态 C/R(每次脏一小部分)在 60–140 ms;但 fork(等同"从零开始的第一代快照")必须物化全部脏内存,且**每个 fork 一份**(3 个 fork = 3×122 MiB)。增量 mem 层链还会持续增长直到 compact,长生命周期 sandbox 的层链深度是隐形成本。
+- **AgentEnv pause 的成本模型是 O(dirty)**:KVM dirty tracking + process_vm_readv 只读脏页。稳态 C/R(每次脏一小部分)在 60–140 ms;但 fork(等同"从零开始的第一代快照")必须物化全部脏内存(同父 child 共享一份,2026-08-21 修正)。增量 mem 层链还会持续增长直到 compact,长生命周期 sandbox 的层链深度是隐形成本。
 - **AKernel park 的成本模型是 O(1) + O(M)**:filestore FICLONE 对可写层大小不敏感(133 ms @1G),但 sentry 匿名内存仍是序列化(1.2 ms/MB save、0.46 ms/MB load)。AKernel 的 checkpoint image 只有 1 MB(filestore 外置为 sidecar),AgentEnv 的 vm_state.bin 也是 ~20 KB(state-only Diff)——**两边的"控制状态"都很小,差别全在可写层与内存的搬运方式**。
 - 数字上:稳态 pause/resume AgentEnv(62–143/80–110 ms)优于 AKernel 分支(133/244 ms),但 AKernel 对 S 平坦——S=1G 时 AgentEnv 的 fork 类全量操作要物化 GB 级数据(实测 100 MiB 脏已 +231 MiB 磁盘、250 ms;线性外推 1 GiB 脏 ≈ 2.4 GiB 磁盘、秒级)。
 
