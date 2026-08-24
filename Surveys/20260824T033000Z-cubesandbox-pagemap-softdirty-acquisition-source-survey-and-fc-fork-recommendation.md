@@ -113,14 +113,33 @@ anon 是"**自 restore 以来的并集**":页一旦 CoW,永远是匿名页,哪�
 
 ### 5.1 布防与采集(`hypervisor/vmm/src/soft_dirty.rs:224-326`)
 
+**先讲清楚 bit55 与"布防"到底是什么**。Linux 给进程的每个 PTE 留了软件自定义位 bit55(soft-dirty),内核规则:页被写过则置 1——但默认没人清它,置 1 后永远是 1,单独看只是累计标志。**"布防"(arm)= 向 `/proc/self/clear_refs` 写 "4"**:内核拿 mmap_lock 写锁**遍历本进程全部 VMA、清掉每一个 PTE 的 bit55**(全进程一个不落——"全局"即由此而来),同时给每个 VMA 重挂 `VM_SOFTDIRTY`——此后任何写都先触发 page fault,内核在 fault 处理里重装 PTE 并把 bit55 置回 1。清零不是目的,目的是**设陷阱**:布防之后,bit55=1 的语义变成"**从清零那一刻起这页被写过**",写动作自己留下证据。
+
+一个稳态快照周期的时间线:
+
+```text
+t0   第 N 次快照:
+     ├─ 读 /proc/self/pagemap,收走 present=1 且 bit55=1 的页(= 上一窗口以来写过的页,真 delta)
+     ├─ 把这些页原地 pwrite 到 reflink 克隆的 base 文件上
+     └─ 写 "4" 到 clear_refs —— 布防,bit55 全清零,新窗口开始
+          │ guest 继续跑:
+          │   写页 A → fault → bit55(A)=1        ← 留下痕迹
+          │   只读页 C → 读 fault 装 PTE,bit55(C)=0 ← 读不留痕
+          │   没碰的页 D → 无 PTE,present=0
+t1   第 N+1 次快照:
+     ├─ 再读 pagemap:bit55=1 的 = {A}(B 上窗口写过也没关系,账本 t0 清过)
+     ├─ 只覆写这些页到新克隆的 base
+     └─ 再布防,开下一个窗口
+```
+
+源码侧(`soft_dirty.rs:224-326`):
+
 ```rust
 const CLEAR_REFS_SOFT_DIRTY: &[u8] = b"4\n";
 const PAGEMAP_SOFT_DIRTY_BIT: u64 = 1 << 55;
 
 pub fn clear_soft_dirty() -> Result<()> {
-    // 写 "4" 到 /proc/self/clear_refs:
-    // 清掉本进程每个 PTE 的 soft-dirty 位,并给每个 VMA 重新挂上 VM_SOFTDIRTY
-    // (之后任何写都会以 fault 方式重新装 PTE 并置位 bit55)
+    // 写 "4" 到 /proc/self/clear_refs:全局清 bit55 + 重挂 VM_SOFTDIRTY(即布防)
 }
 
 pub fn get_soft_dirty_pages(host_addr: u64, length: u64) -> Result<Vec<bool>> {
@@ -129,7 +148,7 @@ pub fn get_soft_dirty_pages(host_addr: u64, length: u64) -> Result<Vec<bool>> {
 }
 ```
 
-窗口协议:**首次快照写 full/anon 集 → `clear_refs(4)` 布防 → 此后每个写页 fault 时置 bit55 → 下次快照只收 bit55=1 的页 → 再布防**。配套单测(`soft_dirty.rs:616-750`)明确断言了 delta 语义:round2 写页 2/3/4 → 只回这三页;round3 只写页 7 → 只回页 7,不回 2/3/4。
+两条线的分工一句话:线一(pagemap-anon)是"**嫌疑集**"(CoW 过就永远匿名,累计只增,起算点=最近一次 restore),线二(soft-dirty)是"**现行集**"(窗口内真实发生的写,起算点=上次布防,每次快照后重置)。交集 = "内容可能变了 ∧ 这个窗口真的动了"。配套单测(`soft_dirty.rs:616-750`)明确断言了 delta 语义:round2 写页 2/3/4 → 只回这三页;round3 只写页 7 → 只回页 7,不回 2/3/4。**首次快照没有起算点**(布防前 bit55 是历史垃圾),所以先写 anon 全集、写完才做第一次布防——即 §7.1 的"惰性布防";布防后头一个窗口里部分非写的 PTE 装载也会置位(线二单独用的污染源之一),这是必须取交集的又一原因。
 
 ### 5.2 能力探测的 round-trip 技巧(`soft_dirty.rs:156-215`)
 
