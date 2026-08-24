@@ -4,7 +4,7 @@
 > 缘起:解释 [023535Z 三线成本 survey](20260824T023535Z-cr-vs-guest-memory-fc-agentenv-gvisor-cubesandbox-anon-rwfs-line-survey.md) §4.3 中的一句话——"脏账语义由 fork 自己的 bitmap 定义,于是有了*页缓存被 DAMON 回收 → md5sum 重读 → async 引擎标脏 → 下次 pause 整批重物化*"。本文把这条因果链的**每一环**拆到源码行级,并完整讲清 AgentEnv 的 checkpoint 流程、resume 流程、它与 overlaybd 的交互,以及"一份 checkpoint 恢复多个实例"的语义。
 > 源码证据:
 > - **FC fork**:`kvcache-ai/firecracker` 分支 `v1.15.1-patch`(AgentENV 容器内 `deps/firecracker/1.15.1-patch-v1`),本地 clone `/tmp/fc-fork`;
-> - **AgentENV**:BareMetal `/root/AgentEnvWorkSpace/AgentENV`(commit `7f4a9b9`),§2–§6 所引行号均为当日 ssh 直读;
+> - **AgentENV**:初版引 BareMetal `/root/AgentEnvWorkSpace/AgentENV`(commit `7f4a9b9`);**2026-08-24 已对照最新本地 clone** `/home/keyang/AgentInfraWorkspace/kvcache-ai/AgentENV`(commit `39bfa34`,比 `7f4a9b9` 新 12 个 commit)逐条复核——所有相关行号未变(仅 config.rs boot args 由 :30-46 移至 :30-53),**放大链三环在上游最新代码中均未被修复**(§10.1);
 > - 因果实验数据:`/root/AgentEnvWorkSpace/redirty_test.sh`(2026-08-24,817/57/826 ms)。
 
 ---
@@ -54,7 +54,7 @@ AgentENV 给 guest 配了三块盘(`sandbox.rs:1695–1740`):`/dev/vda` tools �
 
 ### 2.2 "guest 默认开 DAMON reclaim" 是什么、为什么开
 
-DAMON(Data Access MONitor)是 Linux 内核的访存监测框架;**DAMON reclaim** 是建在其上的"主动回收"模块:内核自己监测哪些页冷,冷过阈值就主动把它们逐出内存,不等内存压力逼到被动回收。guest 是内核 6.8,AgentENV 通过 **boot args 打开它**(`config.rs:30-46`,§9 环③全文引):
+DAMON(Data Access MONitor)是 Linux 内核的访存监测框架;**DAMON reclaim** 是建在其上的"主动回收"模块:内核自己监测哪些页冷,冷过阈值就主动把它们逐出内存,不等内存压力逼到被动回收。guest 跑的是 **AgentENV 自带的内核 `vmlinux-6.1.175`**(`config/deps_manifest.toml` pin,勿与宿主 6.8 混淆;DAMON reclaim 自 5.16 起主线可用),AgentENV 通过 **boot args 打开它**(`config.rs:30-53`,§9 环③全文引;注释要求与 `config/default.toml` 保持同步):
 
 | 参数 | 值 | 含义 |
 |---|---|---|
@@ -332,7 +332,7 @@ pub fn get_dirty_memory_ranges_preserve(&self) -> Result<DirtyMemoryRanges, VmEr
 
 ## 9. 环 ③:为什么重读一定会发生——DAMON 只回收文件页
 
-### 9.1 源码(AgentENV `src/sandbox/firecracker/config.rs:30-46`,§2.2 已逐参数解释)
+### 9.1 源码(AgentENV `src/sandbox/firecracker/config.rs:30-53`,§2.2 已逐参数解释;最新 `39bfa34` 逐字未变)
 
 ```rust
 /// Fallback boot arguments when `config.firecracker.boot_args` is not set.
@@ -397,6 +397,22 @@ const DEFAULT_BOOT_ARGS: &str = "\
 
 对读密集 agent 负载,1+2 组合后 AgentEnv 的 pause 语义才与 CubeSandbox soft-dirty(只记真实写)和 gVisor(只序列化写过的页)对齐。
 
+### 10.1 上游现状核对:最新代码(2026-08-24,commit `39bfa34`)未修复放大链
+
+对照本地最新 clone `/home/keyang/AgentInfraWorkspace/kvcache-ai/AgentENV`(HEAD `39bfa34`,2026-08-24;比本文实验所用的 BareMetal `7f4a9b9` 新 12 个 commit),**三环全部原样**:
+
+| 环 | 最新代码状态 | 证据 |
+|---|---|---|
+| ① 读也标脏(FC fork) | **未变**——FC 依赖 pin 仍是 `1.15.1-patch-v1`(与 `7f4a9b9` 同一版本号、同一二进制),async `mark_dirty`/preserve 原封不动 | `config/deps_manifest.toml:1-3` |
+| 用户盘 Async 引擎 | **未变** | `src/sandbox/firecracker/sandbox.rs:1727`(extra drives 亦 Async,:1769) |
+| ③ DAMON boot args | **逐字未变**(仅文件行号 30-46 → 30-53) | `src/sandbox/firecracker/config.rs:30-53` |
+| ② 的 AgentENV 消费侧 | **无 ack/清除/去重逻辑**(全仓 grep `clear_dirty`/`reset_dirty`/`ack`/内容寻址去重零命中;`get_dirty_memory_ranges` 调用方式未变) | `instance.rs:469-477` |
+| 关键函数行号 | 全部未漂移:trait pause `:279`、fork `:340`、pause `:647`、pause_to_dir `:660`、snapshot_to_dir `:681`、resume `:851`、snapshot_memory_to_overlaybd `:823`、shared_mem `:1546`、load_snapshot_file `:1574`;instance `:457/:469`;service `:533/:1062/:1293`;overlaybd_snapshot `:589/:619/:756` | 逐条 grep 复核 |
+
+`7f4a9b9..39bfa34` 的 12 个 commit 全部与本题无关:4 个 network 重构(egress CIDR/域名、host header 校验)、3 个 overlaybd/ublk io_uring 路径重构与预热门控、CLI 补全、clippy、安装脚本——没有触碰脏账、物化、层链语义。
+
+**结论:截至 `39bfa34`,本文描述的读重脏放大链在上游最新代码中依然完整成立,§10 的四条修复建议均未被采纳。**(一个值得关注的平行动向:该 manifest 新增了 `firecracker.pvm v1.17.0-next.1` 依赖——PVM 路径与 CubeSandbox 的无-/dev/kvm 场景对应,值得后续跟踪其内存快照语义是否不同。)
+
 ---
 
 ## 11. 证据索引
@@ -410,10 +426,11 @@ const DEFAULT_BOOT_ARGS: &str = "\
 - restore mmap(§4.2 第 3 步):`src/vmm/src/vstate/memory.rs:646-672`
 - 上游对照(内部位图本源只记 vMMIO):上游 1.16.1 `memory.rs:460-478`,见 [023535Z survey](20260824T023535Z-cr-vs-guest-memory-fc-agentenv-gvisor-cubesandbox-anon-rwfs-line-survey.md) §3.2
 
-### AgentENV(BareMetal `/root/AgentEnvWorkSpace/AgentENV`,commit `7f4a9b9`;2026-08-24 ssh 直读)
+### AgentENV(双源核对:初版 BareMetal `7f4a9b9` + 最新本地 `/home/keyang/AgentInfraWorkspace/kvcache-ai/AgentENV` `39bfa34`,两者在本文所有引用点上行为一致,见 §10.1)
 
-- **盘配置与 IoEngine**:`src/sandbox/firecracker/sandbox.rs:1695-1740`(tools 盘 Sync / 用户盘 Async + rate limiter,预置于 boot 前)
-- **DAMON boot args(含 `skip_anon=Y`)**:`src/sandbox/firecracker/config.rs:30-46`(§2.2/§9.1 全文引)
+- FC fork 与 guest 内核 pin:`config/deps_manifest.toml`(firecracker.kvm `1.15.1-patch-v1`、kernel.kvm `vmlinux-6.1.175`、新增 firecracker.pvm `v1.17.0-next.1`)
+- **盘配置与 IoEngine**:`src/sandbox/firecracker/sandbox.rs:1695-1740`(tools 盘 Sync / 用户盘 Async + rate limiter,预置于 boot 前;最新版用户盘 :1727、extra drives :1769)
+- **DAMON boot args(含 `skip_anon=Y`)**:`src/sandbox/firecracker/config.rs:30-53`(§2.2/§9.1 全文引;`7f4a9b9` 时为 :30-46)
 - **pause 编排**:`src/orchestrator/service.rs:1062-1200`(状态机、镜像引用钉住、detach 后 `sandbox.pause(artifact_root)`);后端 trait pause 与失败回滚:`src/sandbox/firecracker/sandbox.rs:279-305`
 - **pause 数据面**:`sandbox.rs:647-658`(pause 入口+managed-snapshots 目录)、`:660-681`(pause_to_dir:冻结+落盘)、`:683-820`(snapshot_to_dir 全流程:mem 层、层链组装、rootfs restack、manifest、目录布局)
 - **state-only 快照与脏账 API**:`src/sandbox/firecracker/instance.rs:443-477`(`create_state_only_snapshot`/`get_dirty_memory_ranges`,注释明言"memory data path is handled by AgentENV through dirty memory ranges")
