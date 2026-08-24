@@ -101,7 +101,7 @@ guest 页缓存物理上就是 guest RAM 的一部分,对 host 没有任何特�
 
 ### 第 2 步:取脏账
 
-`GET /vm/dirty-memory-ranges`(FC fork 私有 API,上游不存在)= `get_dirty_memory_ranges_preserve`(`vm.rs:329-344`):读 KVM dirty log(读即清)∪ FC 内部 AtomicBitmap,**并把 KVM 的位 OR 回内部位图**。返回结构含 4K 对齐的 range 列表(image_offset/长度)。语义细节(preserve、只增不减)在 §8 环②。
+`GET /vm/dirty-memory-ranges`(FC fork 私有 API,上游不存在)= `get_dirty_memory_ranges_preserve`(`vm.rs:329-344`):读 KVM dirty log(读即清)∪ FC 内部 AtomicBitmap,**并把 KVM 的位 OR 回内部位图**。返回结构含 4K 对齐的 range 列表(base_host_virt_addr/image_offset/长度)。语义细节(preserve、只增不减)在 §8 环②;"读到的到底是什么、怎么读出来的"在 §3.1 展开。
 
 ### 第 3 步:把脏页物化成 overlaybd mem 层
 
@@ -135,6 +135,39 @@ guest 页缓存物理上就是 guest RAM 的一部分,对 host 没有任何特�
 ### 生命周期收尾:pause 之后 FC 进程死掉
 
 编排层拿到 `FirecrackerPausedState`(`sandbox.rs:208-229`,只包着 snapshot_config)后,**运行句柄被丢弃 → FC 进程停止,guest RAM 释放**。pause 是"挂起-落盘-杀进程",不是挂起等待。这个细节决定了两件事:(a) 内存此时唯一权威副本在 mem 层里;(b) **下一次 resume 必然是新 FC 进程 → 内部脏位图天然清零**——这就是 023535Z §4.2 里 pause#2 平坦(52–58ms)的机制来源。
+
+### 3.1 展开:第 2 步"取脏账"读到的是什么、怎么读出来的
+
+**API 返回的是地址清单,不是内存内容**。FC fork 的返回结构(FC fork `memory.rs:34-52`):
+
+```rust
+pub struct DirtyMemoryRange {
+    pub base_host_virt_addr: u64,  // FC 进程自己的宿主虚拟地址(给 process_vm_readv 用)
+    pub image_offset: u64,         // 在全尺寸内存镜像内的偏移
+    pub length: u64,
+}
+```
+
+**不是完整内存状态,是增量脏集**:判定 = 自上次物化(或 FC 进程启动)以来被写过的 guest 物理页。fresh boot 后首停 ≈ guest 摸过的一切(大,但非全 RAM);resume 后的新进程从零记账,之后每次 pause 只拿 delta。**完整状态 = mem 层链并集**(restore mmap 全尺寸镜像,层链洞 = 零页)。
+
+**匿名内存和 page cache 都包括,而且不止**——记账是 guest 物理页级、**身份盲**的(EPT 只知道"这页被写了"):
+
+| guest 物理页归属 | 进不进脏集 |
+|---|---|
+| 用户匿名内存(堆/栈/MAP_ANON、tmpfs) | 写过就进 |
+| **guest page cache** | 进(写页缓存=写内存;epoch 内新读入的页也算写→读重脏入口) |
+| **guest kernel 自身**(slab/页表/内核栈/kernel data) | 进(全住在 guest RAM) |
+| 设备 DMA 缓冲 | 进(async 打位兜底) |
+| restore 后只读未写的页 | 不进(EPT dirty 只记写;MAP_PRIVATE 读不 CoW) |
+
+身份盲正是 file 变体 2×M 双记的根源。**四层读取机制**:
+
+1. **guest RAM 的宿主形态**:FC 为每个 memslot `mmap` 一段宿主匿名内存,`KVM_SET_USER_MEMORY_REGION` 注册;FC 自己持有 GPA→HVA 映射(dirty range 能给 HVA 的前提);
+2. **KVM 硬件记账**:`track_dirty_pages=true`(AgentENV 默认,`config.rs:186`)开启 EPT 写保护 + **PML**:guest/DMA 首写某页 → EPT violation → gfn 记入 per-slot bitmap,运行时开销近零。`get_dirty_bitmap`(FC fork `vm.rs:309-327`)逐 slot 发 `KVM_GET_DIRTY_LOG`——**返回即清零**;无 bitmap 的 slot 走 `mincore` 近似(上游 fallback,AgentENV 场景不走);
+3. **内部位图补账并合并**:vMMIO + async IO 完成的位(环①)与 KVM 位 OR 并集,连续 1 合并成 4K 对齐 range(image_offset 跨 slot 统一布局);
+4. **内容读出**:AgentENV `ProcessVmReader`(`process_vm_reader.rs`)用 **`process_vm_readv(FC_pid, …)`** 让内核直接把 FC 地址空间里指定 HVA 段拷进自己的缓冲(一次 syscall 拷整段;AgentENV 是 FC 父进程,权限天然满足),再按 512B 扇区映射经 `compact_to` 写成 LSMT 层。
+
+时序:全程 VM `Paused`(无新写)、FC 进程仍活着(快照完成才杀)——读到的是一致快照;传输量 O(脏页),与 guest RAM 总量无关。
 
 成本汇总(1 GiB 脏,file 变体实测):pause ≈45ms + 0.65ms/MB;工件 = mem 层 O(脏) + rootfs 封存 O(upper 脏)(file 变体合计 ≈2×M,因为同一份数据两条线各记一次)。
 
