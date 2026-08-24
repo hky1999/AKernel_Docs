@@ -119,6 +119,8 @@ S=1G park 一次 → `parkd fanout --n 8`:
 
 对照干净内存时的 62–143ms:**1GiB 脏使 pause 退化到 ~0.8–1.3s(≈1.2ms/MB)**,与 OverlayBD 增量内存层机制(KVM dirty tracking + `process_vm_readv` 压层)一致——AgentEnv 的 pause 是 O(dirty),每轮把全部脏页物化进 mem 层(每轮 pause 留下一个 20KB vm_state.bin + 一层 mem overlaybd commit)。resume 91–765ms 波动大(首轮冷读 mem 层)。
 
+> **2026-08-24 补充解读**:三轮全慢的直接原因是**轮间的 `md5sum` exec**——FC fork 的用户盘 Async IO 引擎对完成的块请求(含读)`mark_dirty`,文件页缓存被 DAMON 回收后重读即整批重新标脏。无 exec 时 pause#2 平坦 52–58ms(同机因果实验:817/57/826ms)。见 [20260824 匿名线 survey](20260824T023535Z-cr-vs-guest-memory-fc-agentenv-gvisor-cubesandbox-anon-rwfs-line-survey.md) §4.2–4.3。
+
 ### 4.2 fork(1GiB 脏,count=2/3)
 
 | 项 | 值 |

@@ -135,6 +135,8 @@ rootfs/{image.json, upper.data}           # fork 自己的新可写层
 | 对 S / cgroup 配额的敏感性 | 强(512M 配额下差 28.8×) | **平坦**(126–144 ms / 232–273 ms) |
 | fanout(N×fork) | — | N∈{1..64} 逐实例 195–290 ms 对 N/S 双无关,**df 增量 0**;64 实例风暴 wall 3.4 s |
 | 内存态(1GiB urandom) | — | ckpt 1190 ms(1.2 ms/MB)、restore 470 ms(0.46 ms/MB) |
+
+> **2026-08-24 修正**:本行标注的"内存态"有误——cr-bench e2 的负载是 `dd of=/bench.bin`(`run_e2.sh:63-71`),走的是 **filestore/可写层线**(stock 全序列化口径),不是匿名内存线。匿名线(/dev/shm → sentry k.mf)的首次实测见 [20260824 匿名线 survey](20260824T023535Z-cr-vs-guest-memory-fc-agentenv-gvisor-cubesandbox-anon-rwfs-line-survey.md) §5.2(同机 1GiB 匿名:ckpt 724ms / image 1.07GB,量级与 1190ms 一致但语义口径不同)。
 | 跨节点 | — | tar 口径 467 MB/s(O(S) 外显);restore@node2 1025 ms vs 同机 265 ms |
 
 ## 5. 对比分析
