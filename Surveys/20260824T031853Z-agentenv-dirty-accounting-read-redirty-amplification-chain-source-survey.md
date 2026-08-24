@@ -276,7 +276,7 @@ AgentEnv 最有辨识度的设计决定:**内存和磁盘用同一套分层块�
 
 1. **内存 restore(已实现,默认)**:FC `MAP_PRIVATE` mmap mem 设备 → 按页 fault;daemon LSMT top-down 查索引,命中才读;**全链未命中(洞)= memset 零,零 IO**(`lsmt/file/readonly.rs:254-296` 的 `fill(0)`)。restore O(1)、洞免费、共享实例叠 host page cache;
 2. **rootfs 远程层(已实现)**:`RemoteLayer`/registryfs_v2 按需 range 拉取 + `download_gate` 后台预取,未下完即可启动;
-3. **内存 uffd(写好未启用)**:`storage/uffd-core` + `load_snapshot_uffd`(dead_code)——用户态缺页服务,可做优先级预热,与 AKernel D3(async-warm)同一机会窗口。
+3. **内存 uffd(写好未启用)**:上游 FC 本就有**可选**的 Uffd memory backend(`PUT /snapshot/load` 的 `mem_backend_type = File | Uffd`;Uffd 时 FC 建匿名空内存、`UFFDIO_REGISTER` 全部 region、把 uffd fd + region 映射 JSON 经 UDS/SCM_RIGHTS 交给外部 handler 填页——FC fork `persist.rs:507-539` `guest_memory_from_uffd`)。AgentENV 在此之上写了完整但**未接线**的一套:`instance.rs:476-506` `load_snapshot_uffd`(全仓无调用者;生产路径走 `load_snapshot_file` = File 后端)+ `storage/uffd-core`(`uvm-uffd-core` crate:handler 事件循环、overlaybd LSMT 直接服务缺页、`PageState` 脏跟踪、`MemoryImageBackend::snapshot` 经 `process_vm_readv` 物化增量——**可整体替代 KVM dirty log 的完整管线**,但 workspace 无任何成员依赖该 crate)。一个值得注意的自认限制:`handler.rs` 注释"Firecracker's uffd does not implement UFFDIO_REGISTER_MODE_WP, so **any accessed page is eagerly treated as dirty**"——若启用,读缺页也记脏,与环①同病。对照 CubeSandbox:**零 uffd**(全仓 grep 仅 guest/PVM 内核 config 的 `CONFIG_USERFAULTFD=y`,与 VMM C/R 无关),其 lazy restore 靠 file-backed `MAP_PRIVATE` mmap 的内核缺页,记账靠 pagemap/soft-dirty(见 [033000Z survey](20260824T033000Z-cubesandbox-pagemap-softdirty-acquisition-source-survey-and-fc-fork-recommendation.md))。
 
 限制:lazy 只在读路径(写=私有 CoW 页);compact 全量重写不 lazy。
 
