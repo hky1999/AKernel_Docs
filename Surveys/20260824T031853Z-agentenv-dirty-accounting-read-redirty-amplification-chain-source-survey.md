@@ -69,6 +69,22 @@ DAMON(Data Access MONitor)是 Linux 内核的访存监测框架;**DAMON reclaim*
 
 **代价**:它制造了"逐出 → 重读"循环——这正是放大链环③。一个旨在**缩小**脏集的机制,和环①②的记账语义组合后反而**放大**了脏集,这是本文的核心讽刺。
 
+### 2.3 guest 页缓存的两条持久化线(与 DAMON 的关系)
+
+guest 页缓存物理上就是 guest RAM 的一部分,对 host 没有任何特殊身份(FC 的 dirty tracking 是物理页级,分不清"页缓存"和"malloc 的堆")。于是它的持久化有**两条互相不知情的路径**:
+
+| | 路径 A:写回(guest 主动) | 路径 B:内存 checkpoint(host 被动) |
+|---|---|---|
+| 机制 | guest kernel 把脏页缓存写回 virtio-blk → async 引擎 → overlaybd upper(rootfs 线) | pause 时凡在脏账里的 guest RAM 页(含页缓存页)物化进 mem 层 |
+| 触发 | `fsync`/内核脏页阈值 | 每次 pause;判定 = 自上次物化以来被写过(EPT/async 打位) |
+| 写回后状态 | guest 侧变**干净页缓存**(可零成本丢弃) | **写回不会把页移出脏账**——没有"已落盘"的跨边界通知 |
+
+两线叠加 = file 变体实测 **≈2×M**(rootfs 封存 M + mem 层 M,同一字节各记一次)。反向对照:**未 fsync 的写**只走路径 B(upper 不增长),fork 的 child 仍能看到该文件——因为页缓存内容被 mem 层整体带走。
+
+**DAMON 不持久化任何东西**,它的作用点在时间维度:页缓存驻留 → 重读命中内存,环①不触发;被 DAMON 回收(丢的是干净页,块设备上有权威副本)→ 重读退化为块 IO → 环①标脏 → **重新进入路径 B 的脏账**。即 DAMON 通过控制页缓存驻留时长,间接控制"哪些读会重新进内存 checkpoint 的账"。
+
+**microVM 特有 vs gVisor**:gVisor 里应用文件读写直接落 host 内核管理的 filestore,页缓存天然持久化在宿主文件里,从不住在"可 checkpoint 的内存"里——不存在双记问题。microVM 因 guest 有独立内核,页缓存只能住 guest RAM,双记不可避免(CubeSandbox 的 anon∩soft-dirty 也只是记账层缓解)。
+
 ---
 
 ## 3. AgentEnv 完整 Checkpoint(pause)流程
