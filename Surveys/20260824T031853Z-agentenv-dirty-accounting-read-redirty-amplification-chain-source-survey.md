@@ -184,6 +184,12 @@ pub struct DirtyMemoryRange {
 | 从模板 spawn 的实例 | 仅 spawn 之后的写入(基线 = 模板 mem 层) |
 | fork 的 child | 仅 child resume 之后的写入(基线 = 父捕获的层) |
 
+两个常被问到的精化:
+
+- **"只 checkpoint 写集"与 stock FC 的对比要分对象**:对 **Full** 是本质区别(O(RAM)→O(写集),且 Full 还附带全内存 fault-in);对 **Diff** 是同量级、不同形态——stock Diff 也是物理 O(脏) 的稀疏文件,AgentEnv 的差异在 512B 粒度、内容寻址/可发布、**增量层链**(多次 pause 追加层而非反复覆盖一个稀疏文件)、restore 侧可多实例共享的 ublk 设备。
+- **"resume 回来 1G"的说法要修正**:恢复的是**全尺寸虚拟镜像**(`mem_virtual_size` = 配置的 guest RAM),层链映射到整个地址空间,洞 = 零页;"1G"只是物理字节量,逻辑对象始终全量布局(与 CubeSandbox"增量记账、全量格式"同款选择)。
+- **层链 append-only**:旧层封存后永不改写(mem commit tmp→rename;rootfs upper 封存为 `snapshot.commit` 后新开空 upper;compact 也是生成新文件而非原地改)——**只读不是约束而是共享的前提**:fork 的 child 与父能共享同一份 mem commit,靠的正是"谁都不会写它"。
+
 成本汇总(1 GiB 脏,file 变体实测):pause ≈45ms + 0.65ms/MB;工件 = mem 层 O(脏) + rootfs 封存 O(upper 脏)(file 变体合计 ≈2×M,因为同一份数据两条线各记一次)。
 
 ---
