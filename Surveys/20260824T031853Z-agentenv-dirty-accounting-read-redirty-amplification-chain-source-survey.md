@@ -255,7 +255,32 @@ AgentEnv 最有辨识度的设计决定:**内存和磁盘用同一套分层块�
 
 交互的关键点:**FC 完全无感**。对 FC 来说 mem 就是一块 File 后端的块设备;ublk daemon 才知道那是 overlaybd 层栈;AgentENV 编排层知道层链语义(compact、继承、内容寻址发布)。三层解耦让"内存快照"免费获得了块设备世界的全部工具:内容寻址去重、P2P 分发、commit 发布(`snapshot create` = pause + 入库 + 广播,实测 6.97 s 全量一次,之后 83 ms 恢复)、512B 粒度增量。
 
-### 5.4 改动边界:AgentEnv 动了谁的源码
+### 5.5 compact 的具体实现与 lazy loading
+
+**触发**(`overlaybd_snapshot.rs:410-447` `rewrite_lowers_with_runtime_roots`):组装层链时把 lowers 拆成稳定前缀(模板/已发布 managed-layers)+ 运行期后缀(继承本地层);仅当前缀+后缀+新层 > 32 时,把**后缀+新层**压成单层 `mem_compacted.commit`(稳定前缀不动;后缀混有远程 lower 则 bail 不压)。该逻辑 mem/rootfs 共用(rootfs 多次 pause 同样积累 inherited 层)。
+
+**执行**(`storage/overlaybd/src/lsmt/file/helper.rs:1217` `compact_to`):
+
+1. 写 `HeaderTrailer`(virtual_size、sealed、commit/parent UUID);
+2. 输入是逻辑段集合 `mappings`——**mem 首次物化就是 compact_to 的特例**(`src_layers=[ProcessVmReader]`,把 FC 进程内存当虚拟文件;mappings=dirty ranges);
+3. **zeroed 段不占目标空间**(索引记账、dest_moffset 不前进)——去零免费;
+4. 非零 mappings 按 writer `buffer_size` 打包 chunk,大 mapping 跨 chunk 拆(受 `Segment::MAX_LENGTH` 限制);
+5. 并发拷贝(`buffer_unordered`,mem 场景 concurrency=32),完成后**按 chunk order 排序**再串索引;
+6. 读源按 LSMT 栈 top-down 解析;产出全新文件,旧层不动、引用归零后删。
+
+要点:compact 是**逻辑级重写非 reflink**——真实搬运 O(有效数据) 字节,同时完成去零、扁平化、(可选)压缩。
+
+**统一 vs 分开**:格式/库/daemon/compact 逻辑/发布基础设施统一;设备、层链、image config(`rootfs/image.json` vs `mem_image.json`)、生命周期(rootfs 有可写 upper;mem 只读追加)、会计(两条独立的账——file 变体 2×M 的组织根源)分开。"同一文件系统,两棵独立目录树"。
+
+**lazy loading 三层**:
+
+1. **内存 restore(已实现,默认)**:FC `MAP_PRIVATE` mmap mem 设备 → 按页 fault;daemon LSMT top-down 查索引,命中才读;**全链未命中(洞)= memset 零,零 IO**(`lsmt/file/readonly.rs:254-296` 的 `fill(0)`)。restore O(1)、洞免费、共享实例叠 host page cache;
+2. **rootfs 远程层(已实现)**:`RemoteLayer`/registryfs_v2 按需 range 拉取 + `download_gate` 后台预取,未下完即可启动;
+3. **内存 uffd(写好未启用)**:`storage/uffd-core` + `load_snapshot_uffd`(dead_code)——用户态缺页服务,可做优先级预热,与 AKernel D3(async-warm)同一机会窗口。
+
+限制:lazy 只在读路径(写=私有 CoW 页);compact 全量重写不 lazy。
+
+### 5.6 改动边界:AgentEnv 动了谁的源码
 
 | 组件 | 改了吗 | 说明 |
 |---|---|---|
