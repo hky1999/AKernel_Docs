@@ -169,6 +169,21 @@ pub struct DirtyMemoryRange {
 
 时序:全程 VM `Paused`(无新写)、FC 进程仍活着(快照完成才杀)——读到的是一致快照;传输量 O(脏页),与 guest RAM 总量无关。
 
+### 3.2 fresh 实例的第一次 checkpoint:脏集的基线是"空"
+
+两个账本(KVM dirty bitmap、FC 内部 AtomicBitmap)在 **VM 创建时都是全零**(dirty logging 随 machine-config 预置于 boot 前,`instance.rs:518-527`)。所以**不是从持久化状态 resume 的 fresh 实例,第一次 pause 的脏集 = 自上电以来被写过的所有 guest 物理页**——事实上的全量(对已写集而言),与 FC 上游"第一次 Diff ≈ Full"、CubeSandbox Incremental 首次写 base 是同一现象:
+
+- **包含**:guest kernel 启动的全部写入(内核解压、initrd 解包、slab/页表/内核栈)、所有用户进程匿名内存、boot 以来读入/写过的 page cache(**含被 mmap 执行的二进制**,读入即写)、DMA 缓冲;
+- **不包含**:从未被写过的 guest RAM——在 mem 层里是**洞**,restore mmap 读到洞 = 零页,恰好等于 fresh boot 零初始化 RAM 的语义,"没有基线"无需任何特殊处理。
+
+**但 boot 脏集是每个模板只付一次的成本**(付在创建模板的那次 pause 里):从模板 spawn 的实例,基线 = 模板 mem 层,自己只记 spawn 后的写入——这就是稳态 pause 便宜(干净沙箱 52–143 ms,boot 脏集本身仅几十 MiB 量级)的原因。三种"第一次":
+
+| 场景 | 第一次 checkpoint 的脏集 |
+|---|---|
+| fresh boot 实例(做模板) | 自上电全部写入(kernel 启动+OS+负载),≈ 事实全量 |
+| 从模板 spawn 的实例 | 仅 spawn 之后的写入(基线 = 模板 mem 层) |
+| fork 的 child | 仅 child resume 之后的写入(基线 = 父捕获的层) |
+
 成本汇总(1 GiB 脏,file 变体实测):pause ≈45ms + 0.65ms/MB;工件 = mem 层 O(脏) + rootfs 封存 O(upper 脏)(file 变体合计 ≈2×M,因为同一份数据两条线各记一次)。
 
 ---
